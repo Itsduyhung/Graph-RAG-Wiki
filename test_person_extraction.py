@@ -18,7 +18,7 @@ from pipeline.person_profile_extractor import PersonProfileExtractor
 load_dotenv()
 
 # Change this to extract different people
-TARGET_NAME = "Thành Cát Tư Hãn"  # Example: "Duy Tân", "Minh Mạng", "Gia Long", "Trần Nhân Tông"
+TARGET_NAME = "Kim Đồng"  # Example: "Duy Tân", "Minh Mạng", "Gia Long", "Trần Nhân Tông"
 
 
 def run_extraction(use_person_extractor: bool = False) -> None:
@@ -70,42 +70,21 @@ def run_enrichment() -> None:
             print(f"[*] Created Person node for '{TARGET_NAME}'")
     
     # Get WikiChunk content for TARGET_NAME
-    # Use case-insensitive search with toLower() for more reliable matching
+    # Search only by full name (no keyword splitting) for accuracy
     chunks = []
     
     with db.driver.session(database=db.database) as session:
-        # Strategy 1: Case-insensitive full name match using toLower()
+        # Search only by full name - don't split keywords
         result = session.run(
-            """
+            f"""
             MATCH (w:WikiChunk)
-            WHERE toLower(w.content) CONTAINS toLower($name)
+            WHERE toLower(w.content) CONTAINS toLower('{TARGET_NAME}')
             RETURN w.content AS content, w.chunk_id AS chunk_id
             LIMIT 20
-            """,
-            name=TARGET_NAME,
+            """
         )
         chunks = [(r["chunk_id"] or f"chunk_{i}", r["content"]) 
                   for i, r in enumerate(result)]
-        
-        # Strategy 2: If no match, try searching by first/last name keywords
-        if not chunks and len(TARGET_NAME.split()) > 1:
-            keywords = TARGET_NAME.split()
-            print(f"[*] Full match not found, trying keyword search with: {keywords}")
-            for keyword in keywords:
-                result = session.run(
-                    """
-                    MATCH (w:WikiChunk)
-                    WHERE toLower(w.content) CONTAINS toLower($keyword)
-                    RETURN w.content AS content, w.chunk_id AS chunk_id
-                    LIMIT 10
-                    """,
-                    keyword=keyword,
-                )
-                keyword_chunks = [(r["chunk_id"] or f"chunk_{i}", r["content"]) 
-                                 for i, r in enumerate(result)]
-                chunks.extend(keyword_chunks)
-                if chunks:
-                    break
     
     # Remove duplicates while preserving order
     seen = set()
@@ -130,7 +109,12 @@ def run_enrichment() -> None:
     
     for i, (chunk_id, content) in enumerate(chunks, 1):
         try:
-            nodes, rels = extractor.enrich_text(content, source_chunk_id=chunk_id)
+            # Enrich with auto-linking to TARGET_NAME person
+            nodes, rels = extractor.enrich_text(
+                content, 
+                source_chunk_id=chunk_id,
+                link_to_person=TARGET_NAME  # Auto-link achievements/events to person
+            )
             total_nodes += nodes
             total_rels += rels
             print(f"  [{i}/{len(chunks)}] Chunk '{chunk_id}': {nodes} nodes, {rels} relationships")
@@ -270,6 +254,37 @@ def inspect_person(name: str) -> None:
             print(f"\n[COUNTRIES] ({len(countries)}):")
             for c in countries:
                 print(f"  - {c['name']} [{c['rel_type']}]")
+        
+        # DEBUG: Show all connected nodes and relationship types
+        print(f"\n[DEBUG] All connected nodes and relationships:")
+        all_connected = session.run(
+            """
+            MATCH (p:Person {name: $name})-[r]-(n)
+            RETURN type(r) as rel_type, labels(n)[0] as node_type, n.name as node_name
+            ORDER BY type(r), labels(n)[0]
+            """,
+            name=name,
+        ).data()
+        
+        if all_connected:
+            # Group by relationship type
+            rel_groups = {}
+            for item in all_connected:
+                rel = item['rel_type']
+                node_info = f"{item['node_type']}: {item['node_name']}"
+                if rel not in rel_groups:
+                    rel_groups[rel] = []
+                rel_groups[rel].append(node_info)
+            
+            # Print grouped
+            for rel_type in sorted(rel_groups.keys()):
+                print(f"\n  {rel_type}:")
+                for node_info in rel_groups[rel_type][:5]:  # Show first 5
+                    print(f"    - {node_info}")
+                if len(rel_groups[rel_type]) > 5:
+                    print(f"    ... and {len(rel_groups[rel_type]) - 5} more")
+        else:
+            print(f"  (No relationships found - check if nodes exist!)")
     
     db.close()
 

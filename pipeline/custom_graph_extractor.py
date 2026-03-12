@@ -70,15 +70,25 @@ class CustomGraphExtractor:
         self,
         text: str,
         source_chunk_id: Optional[str] = None,
+        target_person: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Extract nodes and relationships from text using LLM.
+        
+        Args:
+            text: Content to extract from
+            source_chunk_id: ID of source chunk
+            target_person: Name of main person (optional) - if provided, filter results to only include info about this person
         
         Returns:
             dict with keys: persons, achievements, events, eras, fields, relationships, person_relationships
         """
         # Build prompt by substituting text into template
-        prompt = EXTRACTION_PROMPT.replace("{{text}}", text)
+        additional_instruction = ""
+        if target_person:
+            additional_instruction = f"\n\n⚠️ QUAN TRỌNG: Chỉ trích xuất thông tin TRỰC TIẾP liên quan đến '{target_person}'. KHÔNG trích xuất thông tin của các người khác trừ khi họ có quan hệ trực tiếp với '{target_person}'."
+        
+        prompt = EXTRACTION_PROMPT.replace("{{text}}", text) + additional_instruction
         
         try:
             response = call_llm(prompt, model=self.model, temperature=0.2)
@@ -250,15 +260,139 @@ class CustomGraphExtractor:
         self,
         text: str,
         source_chunk_id: Optional[str] = None,
+        link_to_person: Optional[str] = None,
     ) -> Tuple[int, int]:
         """
         Enrich text: extract and build graph.
         
+        Args:
+            text: Text to extract from
+            source_chunk_id: Source chunk identifier
+            link_to_person: Person name to link achievements/events/etc to (if None, uses from_name from relationships)
+        
         Returns:
             (nodes_created, relationships_created)
         """
-        extracted = self.extract_from_text(text, source_chunk_id)
-        return self.build_from_extraction(extracted)
+        # Pass target_person to extraction for filtering
+        extracted = self.extract_from_text(text, source_chunk_id, target_person=link_to_person)
+        nodes_created, rels_created = self.build_from_extraction(extracted)
+        
+        # Auto-link achievements/events/eras/fields to main person if specified
+        if link_to_person:
+            rels_created += self._auto_link_to_person(
+                extracted_data=extracted,
+                person_name=link_to_person
+            )
+        
+        return nodes_created, rels_created
+
+    def _auto_link_to_person(self, extracted_data: Dict[str, Any], person_name: str) -> int:
+        """
+        Auto-create relationships from person to achievements/events/eras/fields.
+        
+        Returns:
+            Number of relationships created
+        """
+        relationships_created = 0
+        
+        # Link to Achievements
+        for achievement in extracted_data.get("achievements", []):
+            try:
+                self.builder.create_relationship(
+                    "Person",
+                    {"name": person_name},
+                    "ACHIEVED",
+                    "Achievement",
+                    {"name": achievement.get("name")},
+                )
+                relationships_created += 1
+            except:
+                pass
+        
+        # Link to Events
+        for event in extracted_data.get("events", []):
+            try:
+                self.builder.create_relationship(
+                    "Person",
+                    {"name": person_name},
+                    "PARTICIPATED_IN",
+                    "Event",
+                    {"name": event.get("name")},
+                )
+                relationships_created += 1
+            except:
+                pass
+        
+        # Link to Eras
+        for era in extracted_data.get("eras", []):
+            try:
+                self.builder.create_relationship(
+                    "Person",
+                    {"name": person_name},
+                    "ACTIVE_IN",
+                    "Era",
+                    {"name": era.get("name")},
+                )
+                relationships_created += 1
+            except:
+                pass
+        
+        # Link to Fields
+        for field in extracted_data.get("fields", []):
+            try:
+                self.builder.create_relationship(
+                    "Person",
+                    {"name": person_name},
+                    "ACTIVE_IN",
+                    "Field",
+                    {"name": field.get("name")},
+                )
+                relationships_created += 1
+            except:
+                pass
+        
+        # FALLBACK: If no explicit relationships extracted, try to link to any Achievement/Event/Era/Field nodes
+        # This handles cases where LLM didn't extract proper relationships
+        try:
+            db = GraphDB()
+            with db.driver.session(database=db.database) as session:
+                # Get all Achievement nodes and link them
+                achievements = session.run(
+                    "MATCH (a:Achievement) RETURN a.name as name LIMIT 100"
+                ).data()
+                for a in achievements:
+                    try:
+                        self.builder.create_relationship(
+                            "Person",
+                            {"name": person_name},
+                            "ACHIEVED",
+                            "Achievement",
+                            {"name": a["name"]},
+                        )
+                        relationships_created += 1
+                    except:
+                        pass
+                
+                # Get all Event nodes and link them
+                events = session.run(
+                    "MATCH (e:Event) RETURN e.name as name LIMIT 100"
+                ).data()
+                for e in events:
+                    try:
+                        self.builder.create_relationship(
+                            "Person",
+                            {"name": person_name},
+                            "PARTICIPATED_IN",
+                            "Event",
+                            {"name": e["name"]},
+                        )
+                        relationships_created += 1
+                    except:
+                        pass
+        except:
+            pass
+        
+        return relationships_created
 
     def enrich_from_wikichunks(self, limit: int = 100) -> Dict[str, int]:
         """Enrich from WikiChunk nodes in Neo4j."""
