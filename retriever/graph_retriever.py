@@ -61,6 +61,178 @@ class GraphRetriever:
             "context": self._build_person_context(person_name, companies)
         }
     
+    def retrieve_person_full_profile(self, person_name: str) -> Dict[str, Any]:
+        """
+        Retrieve complete profile of a person including all relationships:
+        BORN_IN, WORKED_IN, ACTIVE_IN, ACHIEVED, INFLUENCED_BY, DESCRIBED_IN
+        
+        Args:
+            person_name: Name of the person
+            
+        Returns:
+            Dictionary with complete person profile
+        """
+        query = """
+        MATCH (p:Person {name: $name})
+        OPTIONAL MATCH (p)-[:BORN_AT]->(born_tp:TimePoint)
+        OPTIONAL MATCH (p)-[:DIED_AT]->(died_tp:TimePoint)
+        OPTIONAL MATCH (p)-[:HAS_ROLE]->(role:Role)
+        OPTIONAL MATCH (p)-[:BELONGS_TO_DYNASTY]->(dynasty:Dynasty)
+        OPTIONAL MATCH (p)-[:BORN_IN]->(country:Country)
+        OPTIONAL MATCH (p)-[:WORKED_IN]->(field:Field)
+        OPTIONAL MATCH (p)-[:ACTIVE_IN]->(era:Era)
+        OPTIONAL MATCH (p)-[:ACHIEVED]->(achievement:Achievement)
+        OPTIONAL MATCH (p)-[:INFLUENCED_BY]->(influencer:Person)
+        OPTIONAL MATCH (p)-[:DESCRIBED_IN]->(chunk:WikiChunk)
+        OPTIONAL MATCH (p)-[:FOUNDED]->(company:Company)
+        OPTIONAL MATCH (p)-[:PARTICIPATED_IN]->(event:Event)
+        OPTIONAL MATCH (event)-[:HAPPENED_AT]->(event_tp:TimePoint)
+        RETURN 
+            p,
+            collect(DISTINCT born_tp) AS born_timepoints,
+            collect(DISTINCT died_tp) AS died_timepoints,
+            collect(DISTINCT role.name) AS roles,
+            collect(DISTINCT dynasty.name) AS dynasties,
+            collect(DISTINCT country.name) AS countries,
+            collect(DISTINCT field.name) AS fields,
+            collect(DISTINCT era.name) AS eras,
+            collect(DISTINCT achievement.name) AS achievements,
+            collect(DISTINCT influencer.name) AS influencers,
+            collect(DISTINCT chunk.chunk_id) AS wiki_chunks,
+            collect(DISTINCT company.name) AS companies_founded,
+            collect(DISTINCT event) AS events,
+            collect(DISTINCT event_tp) AS event_timepoints
+        """
+        
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            result = session.run(query, name=person_name)
+            record = result.single()
+            
+            if not record:
+                return {
+                    "person": person_name,
+                    "found": False,
+                    "context": f"Không tìm thấy thông tin về {person_name}"
+                }
+            
+            person_props = dict(record["p"])
+            born_tps = [dict(tp) for tp in (record["born_timepoints"] or []) if tp]
+            died_tps = [dict(tp) for tp in (record["died_timepoints"] or []) if tp]
+            roles = [r for r in (record["roles"] or []) if r]
+            dynasties = [d for d in (record["dynasties"] or []) if d]
+            countries = record["countries"] or []
+            fields = record["fields"] or []
+            eras = record["eras"] or []
+            achievements = record["achievements"] or []
+            influencers = record["influencers"] or []
+            wiki_chunks = record["wiki_chunks"] or []
+            companies = record["companies_founded"] or []
+            events = [dict(e) for e in (record["events"] or [])]
+            event_tps = [dict(tp) for tp in (record["event_timepoints"] or []) if tp]
+            
+            context = self._build_full_person_context(
+                person_name,
+                person_props,
+                countries,
+                fields,
+                eras,
+                achievements,
+                influencers,
+                wiki_chunks,
+                companies,
+                events,
+                roles,
+                dynasties,
+                born_tps,
+                died_tps,
+                event_tps,
+            )
+            
+            return {
+                "person": person_name,
+                "found": True,
+                "properties": person_props,
+                "roles": roles,
+                "dynasties": dynasties,
+                "born_timepoints": born_tps,
+                "died_timepoints": died_tps,
+                "countries": countries,
+                "fields": fields,
+                "eras": eras,
+                "achievements": achievements,
+                "influencers": influencers,
+                "wiki_chunks": wiki_chunks,
+                "companies_founded": companies,
+                "events": events,
+                "context": context
+            }
+    
+    def retrieve_by_relationship_type(
+        self, 
+        person_name: str, 
+        relationship_type: str
+    ) -> Dict[str, Any]:
+        """
+        Retrieve specific relationship type for a person.
+        
+        Args:
+            person_name: Name of the person
+            relationship_type: Type of relationship (BORN_IN, WORKED_IN, etc.)
+            
+        Returns:
+            Dictionary with relationship information
+        """
+        # Map relationship to target node type
+        rel_to_node = {
+            "BORN_IN": "Country",
+            "BORN_AT": "TimePoint",
+            "DIED_AT": "TimePoint",
+            "WORKED_IN": "Field",
+            "ACTIVE_IN": "Era",
+            "ACHIEVED": "Achievement",
+            "INFLUENCED_BY": "Person",
+            "DESCRIBED_IN": "WikiChunk",
+            "FOUNDED": "Company",
+            "CHILD_OF": "Person",
+            "PARTICIPATED_IN": "Event",
+            "HAS_ROLE": "Role",
+            "BELONGS_TO_DYNASTY": "Dynasty",
+        }
+        
+        target_type = rel_to_node.get(relationship_type)
+        if not target_type:
+            return {
+                "person": person_name,
+                "relationship": relationship_type,
+                "targets": [],
+                "error": f"Unknown relationship type: {relationship_type}"
+            }
+        
+        query = f"""
+        MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:{target_type})
+        RETURN target, r
+        ORDER BY target.name
+        """
+        
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            result = session.run(query, name=person_name)
+            targets = []
+            for record in result:
+                target_props = dict(record["target"])
+                rel_props = dict(record["r"])
+                targets.append({
+                    "target": target_props,
+                    "relationship_properties": rel_props
+                })
+        
+        return {
+            "person": person_name,
+            "relationship": relationship_type,
+            "target_type": target_type,
+            "targets": targets,
+            "context": self._build_relationship_context(person_name, relationship_type, targets)
+        }
+    
     def retrieve_by_relationship(
         self, 
         entity_type: str, 
@@ -107,5 +279,170 @@ class GraphRetriever:
             return f"Person: {person_name} (no companies found)"
         
         return f"Person: {person_name}\nCompanies Founded: {', '.join(companies)}"
+    
+    def _build_full_person_context(
+        self,
+        person_name: str,
+        person_props: Dict[str, Any],
+        countries: List[str],
+        fields: List[str],
+        eras: List[str],
+        achievements: List[str],
+        influencers: List[str],
+        wiki_chunks: List[str],
+        companies: List[str],
+        events: List[Dict[str, Any]],
+        roles: List[str],
+        dynasties: List[str],
+        born_timepoints: List[Dict[str, Any]],
+        died_timepoints: List[Dict[str, Any]],
+        event_timepoints: List[Dict[str, Any]],
+    ) -> str:
+        """Build comprehensive context string for person profile."""
+        lines = [f"Person: {person_name}"]
+
+        if person_props.get("aliases") or person_props.get("other_names"):
+            aliases = person_props.get("aliases") or person_props.get("other_names")
+            if isinstance(aliases, list):
+                aliases = ", ".join(str(a) for a in aliases)
+            lines.append(f"Aliases / Other names: {aliases}")
+        
+        if person_props.get("biography"):
+            lines.append(f"Biography: {person_props['biography']}")
+        
+        if person_props.get("birth_date"):
+            lines.append(f"Birth Date: {person_props['birth_date']}")
+        if person_props.get("birth_year") is not None:
+            lines.append(f"Birth Year: {person_props['birth_year']}")
+        if born_timepoints:
+            lines.append(f"Born At: {', '.join(tp.get('label','') for tp in born_timepoints if tp.get('label'))}")
+
+        if person_props.get("death_date"):
+            lines.append(f"Death Date: {person_props['death_date']}")
+        if person_props.get("death_year") is not None:
+            lines.append(f"Death Year: {person_props['death_year']}")
+        if died_timepoints:
+            lines.append(f"Died At: {', '.join(tp.get('label','') for tp in died_timepoints if tp.get('label'))}")
+
+        if roles:
+            lines.append(f"Roles: {', '.join(roles)}")
+
+        if dynasties:
+            lines.append(f"Dynasties: {', '.join(dynasties)}")
+        
+        if countries:
+            lines.append(f"Born In: {', '.join(countries)}")
+        
+        if fields:
+            lines.append(f"Worked In Fields: {', '.join(fields)}")
+        
+        if eras:
+            lines.append(f"Active In Eras: {', '.join(eras)}")
+        
+        if achievements:
+            lines.append(f"Achievements: {', '.join(achievements)}")
+        
+        if influencers:
+            lines.append(f"Influenced By: {', '.join(influencers)}")
+        
+        if companies:
+            lines.append(f"Companies Founded: {', '.join(companies)}")
+        
+        if wiki_chunks:
+            lines.append(f"Described In: {len(wiki_chunks)} wiki chunks")
+
+        # Events (PARTICIPATED_IN)
+        if events:
+            formatted_events = []
+            for e in events:
+                name = e.get("name", "Unknown event")
+                year = e.get("year")
+                s = name
+                if year:
+                    s += f" ({year})"
+                formatted_events.append(s)
+            lines.append(f"Events: {', '.join(formatted_events)}")
+
+        # Nếu có birth_year và có sự kiện "Lên ngôi" với year, gợi ý tuổi lên ngôi
+        try:
+            by = person_props.get("birth_year")
+            if by is not None:
+                for e in events:
+                    ename = (e.get("name") or "").lower()
+                    ey = e.get("year")
+                    if ey and ("lên ngôi" in ename or "đăng quang" in ename):
+                        lines.append(f"Estimated age at accession: {int(ey) - int(by)}")
+                        break
+        except Exception:
+            pass
+
+        # Bổ sung thông tin trị vì nếu có trong properties
+        reign_start = person_props.get("reign_start_year")
+        reign_end = person_props.get("reign_end_year")
+        role = person_props.get("role")
+        if reign_start or reign_end or role:
+            parts = []
+            if reign_start:
+                parts.append(f"from {reign_start}")
+            if reign_end:
+                parts.append(f"to {reign_end}")
+            reign_str = " ".join(parts) if parts else ""
+            if role:
+                lines.append(f"Role: {role}")
+            if reign_str:
+                lines.append(f"Reign: {reign_str}")
+        
+        return "\n".join(lines)
+    
+    def _build_relationship_context(
+        self, 
+        person_name: str, 
+        relationship_type: str, 
+        targets: List[Dict[str, Any]]
+    ) -> str:
+        """Build context string for specific relationship."""
+        if not targets:
+            return f"{person_name} has no {relationship_type} relationships"
+        
+        target_names = [t["target"].get("name", "Unknown") for t in targets]
+        return f"{person_name} - {relationship_type}: {', '.join(target_names)}"
+
+    def search_person_by_text(self, text: str, limit: int = 3) -> Dict[str, Any]:
+        """
+        Fallback search: tìm Person theo name/biography chứa text câu hỏi.
+        Hữu ích cho các câu hỏi như 'Vị vua cuối cùng của triều Tiền Lê là ai?'
+        khi intent không chỉ rõ person.
+        """
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE (p.name CONTAINS $q
+                       OR (p.biography IS NOT NULL AND p.biography CONTAINS $q))
+                RETURN p
+                LIMIT $limit
+                """,
+                q=text,
+                limit=limit,
+            )
+            persons = [dict(record["p"]) for record in result]
+
+        if not persons:
+            return {"persons": [], "context": ""}
+
+        lines = []
+        for p in persons:
+            name = p.get("name", "Unknown")
+            bio = p.get("biography", "")
+            birth = p.get("birth_date")
+            line = f"Person: {name}"
+            if birth:
+                line += f" (Birth Date: {birth})"
+            if bio:
+                line += f"\nBiography: {bio}"
+            lines.append(line)
+
+        context = "\n\n".join(lines)
+        return {"persons": persons, "context": context}
 
 

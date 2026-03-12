@@ -47,6 +47,11 @@ class QueryPipeline:
         # 2. Graph retrieval based on intent
         context = self._retrieve_context(intent)
         
+        # 2b. Fallback: nếu chưa có context, thử tìm Person theo văn bản câu hỏi
+        if not context:
+            fallback = self.graph_retriever.search_person_by_text(question)
+            context = fallback.get("context", "")
+        
         if not context:
             return "❌ Không tìm thấy dữ liệu liên quan."
         
@@ -61,19 +66,49 @@ class QueryPipeline:
     def _retrieve_context(self, intent: Dict[str, Any]) -> str:
         """Retrieve context from graph based on intent."""
         intent_type = intent.get("intent", "").upper()
+        person_name = intent.get("person", "")
+        company_name = intent.get("company", "")
+        relationship_type = intent.get("relationship_type", "")
         
-        if intent_type == "FIND_FOUNDER":
-            company_name = intent.get("company", "")
-            if company_name:
-                result = self.graph_retriever.retrieve_by_company(company_name)
+        # Handle person-related queries
+        if person_name:
+            if intent_type == "FIND_PERSON_PROFILE":
+                result = self.graph_retriever.retrieve_person_full_profile(person_name)
                 return result.get("context", "")
-        
-        # Handle other intent types
-        elif intent_type == "FIND_COMPANY":
-            person_name = intent.get("person", "")
-            if person_name:
+            
+            elif intent_type in ["FIND_BORN_IN", "FIND_WORKED_IN", "FIND_ACTIVE_IN", 
+                                 "FIND_ACHIEVEMENTS", "FIND_INFLUENCERS"]:
+                # Map intent to relationship type
+                intent_to_rel = {
+                    "FIND_BORN_IN": "BORN_IN",
+                    "FIND_WORKED_IN": "WORKED_IN",
+                    "FIND_ACTIVE_IN": "ACTIVE_IN",
+                    "FIND_ACHIEVEMENTS": "ACHIEVED",
+                    "FIND_INFLUENCERS": "INFLUENCED_BY"
+                }
+                rel_type = intent_to_rel.get(intent_type) or relationship_type
+                if rel_type:
+                    result = self.graph_retriever.retrieve_by_relationship_type(person_name, rel_type)
+                    return result.get("context", "")
+            
+            elif intent_type == "FIND_COMPANY":
                 result = self.graph_retriever.retrieve_by_person(person_name)
                 return result.get("context", "")
+            
+            # Default: return full profile
+            else:
+                result = self.graph_retriever.retrieve_person_full_profile(person_name)
+                return result.get("context", "")
+        
+        # Handle company-related queries
+        if company_name and intent_type == "FIND_FOUNDER":
+            result = self.graph_retriever.retrieve_by_company(company_name)
+            return result.get("context", "")
+        
+        # Handle relationship-specific queries
+        if relationship_type and person_name:
+            result = self.graph_retriever.retrieve_by_relationship_type(person_name, relationship_type)
+            return result.get("context", "")
         
         return ""
 

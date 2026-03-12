@@ -1,70 +1,70 @@
 # llm/llm_client.py
-"""LLM client cho Ollama - đơn giản và tập trung."""
+"""LLM client dùng YEScale (Gemini 2.0 Flash) thay cho Ollama."""
+
 import os
+from typing import Optional
+
 import requests
-from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Ollama configuration
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral")
+# YEScale / Gemini configuration
+YESCALE_BASE_URL = os.getenv(
+    "YESCALE_BASE_URL",
+    "https://api.yescale.io/v1/chat/completions",
+)
+YESCALE_MODEL = os.getenv("YESCALE_MODEL", "gemini-2.0-flash")
+YESCALE_API_KEY = os.getenv("YESCALE_API_KEY")
 
 
 def call_llm(
-    prompt: str, 
-    model: Optional[str] = None, 
-    stream: bool = False,
+    prompt: str,
+    model: Optional[str] = None,
+    stream: bool = False,  # chưa hỗ trợ stream trong client này
     temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None,
 ) -> str:
     """
-    Gọi Ollama LLM API - đơn giản và trực tiếp.
-    
-    Args:
-        prompt: Câu hỏi hoặc prompt
-        model: Tên model (mặc định từ env OLLAMA_MODEL)
-        stream: Có stream response không (chưa support streaming output)
-        temperature: Temperature cho generation
-        max_tokens: Số tokens tối đa
-    
-    Returns:
-        Response text từ LLM
-    
-    Examples:
-        >>> response = call_llm("Ai là người sáng lập của Fintech X?")
-        >>> response = call_llm("Hello", model="llama2", temperature=0.7)
+    Gọi LLM qua YEScale (Gemini 2.0 Flash) với API kiểu OpenAI chat/completions.
     """
+    if not YESCALE_API_KEY:
+        raise RuntimeError(
+            "YESCALE_API_KEY chưa được cấu hình trong environment (.env)."
+        )
+
     payload = {
-        "model": model or OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": stream
+        "model": model or YESCALE_MODEL,
+        "messages": [
+            {"role": "user", "content": prompt},
+        ],
     }
-    
-    # Thêm optional parameters nếu có
+
     if temperature is not None:
-        payload["options"] = payload.get("options", {})
-        payload["options"]["temperature"] = temperature
-    
+        payload["temperature"] = temperature
     if max_tokens is not None:
-        payload["options"] = payload.get("options", {})
-        payload["options"]["num_predict"] = max_tokens
-    
+        payload["max_tokens"] = max_tokens
+
+    headers = {
+        "Authorization": f"Bearer {YESCALE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
     try:
         response = requests.post(
-            OLLAMA_URL,
+            YESCALE_BASE_URL,
             json=payload,
-            timeout=120  # Timeout 120s cho các prompt dài
+            headers=headers,
+            timeout=120,
         )
         response.raise_for_status()
-        
-        result = response.json()
-        return result.get("response", "")
-    
+        data = response.json()
+        # OpenAI‑style response
+        return data["choices"][0]["message"]["content"]
     except requests.exceptions.RequestException as e:
-        raise ConnectionError(f"Không thể kết nối đến Ollama tại {OLLAMA_URL}. "
-                            f"Đảm bảo Ollama đang chạy: ollama serve. Error: {e}")
+        raise ConnectionError(
+            f"Không thể kết nối đến YEScale tại {YESCALE_BASE_URL}. Error: {e}"
+        )
 
 
 def call_llm_with_context(

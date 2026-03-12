@@ -294,3 +294,330 @@ class GraphBuilder:
     def create_founded_relationship(self, person_name: str, company_name: str, properties: Dict[str, Any] = None):
         """Backward compatibility - dùng create_relationship thay thế."""
         self.create_relationship("Person", person_name, "FOUNDED", "Company", company_name, properties)
+    
+    def create_person_with_profile(
+        self,
+        person_name: str,
+        person_properties: Optional[Dict[str, Any]] = None,
+        born_in: Optional[Dict[str, Any]] = None,
+        worked_in: Optional[List[Dict[str, Any]]] = None,
+        active_in: Optional[List[Dict[str, Any]]] = None,
+        achievements: Optional[List[Dict[str, Any]]] = None,
+        influenced_by: Optional[List[Dict[str, Any]]] = None,
+        described_in: Optional[List[Dict[str, Any]]] = None,
+        companies_founded: Optional[List[Dict[str, Any]]] = None,
+        parents: Optional[List[Dict[str, Any]]] = None,
+        events: Optional[List[Dict[str, Any]]] = None,
+        roles: Optional[List[str]] = None,
+        dynasty: Optional[str] = None,
+    ) -> None:
+        """
+        Tạo Person node với đầy đủ profile và các relationships.
+        
+        Args:
+            person_name: Tên của person
+            person_properties: Thuộc tính của person (age, email, birth_date, biography, ...)
+            born_in: {"country": "Country Name", "year": 1990, "city": "City Name"}
+            worked_in: [{"field": "Field Name", "years": 10, "role": "..."}, ...]
+            active_in: [{"era": "Era Name", "start_year": 2000, "end_year": 2010}, ...]
+            achievements: [{"achievement": "Achievement Name", "year": 2020, "significance": "..."}, ...]
+            influenced_by: [{"person": "Person Name", "influence_type": "...", "description": "..."}, ...]
+            described_in: [{"chunk_id": "chunk_123", "relevance_score": 0.9}, ...]
+            companies_founded: [{"company": "Company Name", "year": 2020}, ...]
+            parents: [{"name": "Tên cha/mẹ", "relation": "cha|mẹ|..."}]
+            events: [{"name": "Tên sự kiện", "year": 0, "description": "...", "significance": "..."}, ...]
+            roles: ["Vua", "Thiền sư", ...]
+            dynasty: "Tiền Lê|Trần|Lý|Nguyễn|..."
+        
+        Example:
+            builder.create_person_with_profile(
+                "Albert Einstein",
+                person_properties={"birth_date": "1879-03-14", "biography": "Theoretical physicist"},
+                born_in={"country": "Germany", "year": 1879, "city": "Ulm"},
+                worked_in=[{"field": "Physics", "years": 50, "role": "Theoretical Physicist"}],
+                active_in=[{"era": "Early 20th Century", "start_year": 1900, "end_year": 1955}],
+                achievements=[{"achievement": "Nobel Prize in Physics", "year": 1921}],
+                influenced_by=[{"person": "Max Planck", "influence_type": "Academic"}]
+            )
+        """
+        # Tạo Person node
+        self.create_node("Person", person_name, person_properties)
+
+        # Helpers: TimePoint
+        def timepoint_label(year=None, month=None, day=None):
+            if year is None:
+                return None
+            if month is None:
+                return str(year)
+            if day is None:
+                return f"{int(year):04d}-{int(month):02d}"
+            return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+        def create_timepoint(year=None, month=None, day=None):
+            label = timepoint_label(year, month, day)
+            if not label:
+                return None
+            self.create_node(
+                "TimePoint",
+                {"label": label},
+                {"year": year, "month": month, "day": day},
+            )
+            return {"label": label}
+
+        def parse_ymd(date_str: Any):
+            if not isinstance(date_str, str):
+                return None, None, None
+            s = date_str.strip()
+            # simple YYYY-MM-DD or YYYY/MM/DD
+            for sep in ("-", "/"):
+                parts = s.split(sep)
+                if len(parts) == 3 and all(p.isdigit() for p in parts):
+                    y, m, d = parts
+                    try:
+                        return int(y), int(m), int(d)
+                    except ValueError:
+                        return None, None, None
+            # YYYY-MM or YYYY/MM
+            for sep in ("-", "/"):
+                parts = s.split(sep)
+                if len(parts) == 2 and all(p.isdigit() for p in parts):
+                    y, m = parts
+                    try:
+                        return int(y), int(m), None
+                    except ValueError:
+                        return None, None, None
+            # YYYY
+            if s.isdigit() and len(s) == 4:
+                return int(s), None, None
+            return None, None, None
+
+        def best_timepoint(
+            year=None, month=None, day=None, date_str: Any = None
+        ):
+            """
+            Trả về (y,m,d) cụ thể nhất.
+            Ưu tiên lấy từ date_str nếu parse được; sau đó dùng day/month/year rời.
+            Không tự tạo thêm TimePoint chỉ-năm khi đã có YYYY-MM-DD.
+            """
+            py, pm, pd = parse_ymd(date_str)
+            y = py if py is not None else year
+            m = pm if pm is not None else month
+            d = pd if pd is not None else day
+            if y is None:
+                return None, None, None
+            # normalize: nếu có day mà thiếu month thì bỏ day (không hợp lệ)
+            if d is not None and m is None:
+                d = None
+            return y, m, d
+
+        # BORN_AT / DIED_AT from person_properties if available (single most-specific node)
+        if person_properties:
+            birth_year = person_properties.get("birth_year")
+            birth_month = person_properties.get("birth_month")
+            birth_day = person_properties.get("birth_day")
+            death_year = person_properties.get("death_year")
+            death_month = person_properties.get("death_month")
+            death_day = person_properties.get("death_day")
+
+            by, bm, bd = best_timepoint(
+                birth_year, birth_month, birth_day, person_properties.get("birth_date")
+            )
+            born_tp = create_timepoint(by, bm, bd)
+            if born_tp:
+                self.create_relationship(
+                    "Person", person_name, "BORN_AT", "TimePoint", born_tp, {}
+                )
+
+            dy, dm, dd = best_timepoint(
+                death_year, death_month, death_day, person_properties.get("death_date")
+            )
+            died_tp = create_timepoint(dy, dm, dd)
+            if died_tp:
+                self.create_relationship(
+                    "Person", person_name, "DIED_AT", "TimePoint", died_tp, {}
+                )
+
+        # HAS_ROLE (from explicit roles list or person_properties.role)
+        role_values: List[str] = []
+        if roles:
+            role_values.extend([r for r in roles if r])
+        if person_properties and person_properties.get("role"):
+            role_values.append(person_properties.get("role"))
+        # de-dup while preserving order
+        seen = set()
+        role_values = [r for r in role_values if not (r in seen or seen.add(r))]
+
+        for r in role_values:
+            self.create_node("Role", r, {})
+            self.create_relationship("Person", person_name, "HAS_ROLE", "Role", r, {})
+
+        # BELONGS_TO_DYNASTY
+        if dynasty:
+            self.create_node("Dynasty", dynasty, {})
+            self.create_relationship("Person", person_name, "BELONGS_TO_DYNASTY", "Dynasty", dynasty, {})
+        
+        # BORN_IN relationship
+        if born_in:
+            country_name = born_in.get("country")
+            if country_name:
+                self.create_node("Country", country_name, {
+                    "code": born_in.get("code"),
+                    "region": born_in.get("region")
+                })
+                self.create_relationship(
+                    "Person", person_name,
+                    "BORN_IN",
+                    "Country", country_name,
+                    {"year": born_in.get("year"), "city": born_in.get("city")}
+                )
+        
+        # WORKED_IN relationships
+        if worked_in:
+            for work in worked_in:
+                field_name = work.get("field")
+                if field_name:
+                    self.create_node("Field", field_name, {
+                        "category": work.get("category"),
+                        "description": work.get("description")
+                    })
+                    self.create_relationship(
+                        "Person", person_name,
+                        "WORKED_IN",
+                        "Field", field_name,
+                        {"years": work.get("years"), "role": work.get("role")}
+                    )
+        
+        # ACTIVE_IN relationships
+        if active_in:
+            for era_info in active_in:
+                era_name = era_info.get("era")
+                if era_name:
+                    self.create_node("Era", era_name, {
+                        "start_year": era_info.get("start_year"),
+                        "end_year": era_info.get("end_year"),
+                        "description": era_info.get("description")
+                    })
+                    self.create_relationship(
+                        "Person", person_name,
+                        "ACTIVE_IN",
+                        "Era", era_name,
+                        {
+                            "start_year": era_info.get("start_year"),
+                            "end_year": era_info.get("end_year")
+                        }
+                    )
+        
+        # ACHIEVED relationships
+        if achievements:
+            for achievement_info in achievements:
+                achievement_name = achievement_info.get("achievement")
+                if achievement_name:
+                    self.create_node("Achievement", achievement_name, {
+                        "year": achievement_info.get("year"),
+                        "description": achievement_info.get("description"),
+                        "award": achievement_info.get("award")
+                    })
+                    self.create_relationship(
+                        "Person", person_name,
+                        "ACHIEVED",
+                        "Achievement", achievement_name,
+                        {
+                            "year": achievement_info.get("year"),
+                            "significance": achievement_info.get("significance")
+                        }
+                    )
+        
+        # INFLUENCED_BY relationships
+        if influenced_by:
+            for influence_info in influenced_by:
+                influencer_name = influence_info.get("person")
+                if influencer_name:
+                    # Tạo influencer person nếu chưa có
+                    self.create_node("Person", influencer_name, {})
+                    self.create_relationship(
+                        "Person", person_name,
+                        "INFLUENCED_BY",
+                        "Person", influencer_name,
+                        {
+                            "influence_type": influence_info.get("influence_type"),
+                            "description": influence_info.get("description")
+                        }
+                    )
+        
+        # DESCRIBED_IN relationships
+        if described_in:
+            for chunk_info in described_in:
+                chunk_id = chunk_info.get("chunk_id")
+                if chunk_id:
+                    # Tạo WikiChunk nếu chưa có
+                    self.create_node("WikiChunk", {"chunk_id": chunk_id}, {
+                        "content": chunk_info.get("content"),
+                        "source": chunk_info.get("source"),
+                        "page_title": chunk_info.get("page_title")
+                    })
+                    self.create_relationship(
+                        "Person", person_name,
+                        "DESCRIBED_IN",
+                        "WikiChunk", {"chunk_id": chunk_id},
+                        {"relevance_score": chunk_info.get("relevance_score", 1.0)}
+                    )
+        
+        # FOUNDED relationships
+        if companies_founded:
+            for company_info in companies_founded:
+                company_name = company_info.get("company")
+                if company_name:
+                    self.create_node("Company", company_name, {
+                        "industry": company_info.get("industry"),
+                        "founded_year": company_info.get("year")
+                    })
+                    self.create_relationship(
+                        "Person", person_name,
+                        "FOUNDED",
+                        "Company", company_name,
+                        {"year": company_info.get("year")}
+                    )
+
+        # CHILD_OF relationships (parents)
+        if parents:
+            for parent in parents:
+                parent_name = parent.get("name")
+                if parent_name:
+                    # Tạo parent person nếu chưa có
+                    self.create_node("Person", parent_name, {})
+                    self.create_relationship(
+                        "Person", person_name,
+                        "CHILD_OF",
+                        "Person", parent_name,
+                        {"relation_type": parent.get("relation")}
+                    )
+
+        # PARTICIPATED_IN relationships (events)
+        if events:
+            for event in events:
+                event_name = event.get("name")
+                if event_name:
+                    self.create_node("Event", event_name, {
+                        "year": event.get("year"),
+                        "description": event.get("description"),
+                        "significance": event.get("significance"),
+                    })
+                    self.create_relationship(
+                        "Person", person_name,
+                        "PARTICIPATED_IN",
+                        "Event", event_name,
+                        {
+                            "year": event.get("year"),
+                            "role": person_properties.get("role") if person_properties else None,
+                            "description": event.get("description"),
+                            "significance": event.get("significance"),
+                        }
+                    )
+
+                    # Event timepoint (HAPPENED_AT)
+                    event_year = event.get("year")
+                    event_month = event.get("month")
+                    event_day = event.get("day")
+                    tp = create_timepoint(event_year, event_month, event_day)
+                    if tp:
+                        self.create_relationship("Event", event_name, "HAPPENED_AT", "TimePoint", tp, {})
