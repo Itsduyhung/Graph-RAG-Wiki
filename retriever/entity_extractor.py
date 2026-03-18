@@ -29,7 +29,9 @@ class EntityExtractor:
         Returns:
             Dictionary with intent and extracted entities, or None if extraction fails
         """
-        prompt = INTENT_PROMPT.format(question=question)
+        # Escape { and } in question to avoid format string errors
+        escaped_question = question.replace("{", "{{").replace("}", "}}")
+        prompt = INTENT_PROMPT.format(question=escaped_question)
         
         try:
             response = call_llm(prompt, model=self.model, temperature=temperature)
@@ -63,7 +65,9 @@ class EntityExtractor:
         Returns:
             List of extracted entities with type, name, and confidence
         """
-        prompt = ENTITY_EXTRACTION_PROMPT.format(text=text)
+        # Escape { and } in text to avoid format string errors
+        escaped_text = text.replace("{", "{{").replace("}", "}}")
+        prompt = ENTITY_EXTRACTION_PROMPT.format(text=escaped_text)
         
         try:
             response = call_llm(prompt, model=self.model, temperature=temperature)

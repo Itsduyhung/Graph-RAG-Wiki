@@ -1,128 +1,215 @@
 # pipeline/query_pipeline.py
-"""Query processing pipeline for Graph RAG."""
+"""Query pipeline - LLM-driven retrieval (không cần embeddings)."""
+import json
+import re
 from typing import Dict, Any, Optional
 from graph.storage import GraphDB
-from retriever.entity_extractor import EntityExtractor
-from retriever.graph_retriever import GraphRetriever
 from llm.answer_generator import AnswerGenerator
+from llm.llm_client import call_llm
 
 
 class QueryPipeline:
-    """Main query processing pipeline - sử dụng Ollama và Neo4j."""
-    
-    def __init__(
-        self, 
-        graph_db: GraphDB = None,
-        model: Optional[str] = None
-    ):
-        """
-        Initialize query pipeline.
-        
-        Args:
-            graph_db: Neo4j database connection (mặc định tự tạo)
-            model: Tên model Ollama (mặc định từ env OLLAMA_MODEL)
-        """
+    """Query pipeline - LLM phân tích câu hỏi → Cypher query → LLM trả lời."""
+
+    # Cache schema để không query mỗi lần
+    _schema_cache: Optional[str] = None
+
+    def __init__(self, graph_db: GraphDB = None, model: str = None):
         self.graph_db = graph_db or GraphDB()
         self.model = model
-        self.entity_extractor = EntityExtractor(model=model)
-        self.graph_retriever = GraphRetriever(graph_db=self.graph_db)
         self.answer_generator = AnswerGenerator(model=model)
-    
+
     def process_query(self, question: str) -> str:
-        """
-        Process a user question through the complete pipeline.
+        """Process query - Luôn dùng LLM để generate answer."""
         
-        Args:
-            question: User question
-            
-        Returns:
-            Generated answer
-        """
-        # 1. Intent extraction
-        intent = self.entity_extractor.extract_intent(question)
+        # THỰC HIỆN 1: Direct search trước (nhanh nhất)
+        context = self._direct_search(question)
         
-        if not intent:
-            return "❌ Không hiểu câu hỏi. Vui lòng thử lại."
-        
-        # 2. Graph retrieval based on intent
-        context = self._retrieve_context(intent)
-        
-        # 2b. Fallback: nếu chưa có context, thử tìm Person theo văn bản câu hỏi
         if not context:
-            fallback = self.graph_retriever.search_person_by_text(question)
-            context = fallback.get("context", "")
-        
+            # THỰC HIỆN 2: LLM-driven retrieval (chỉ khi direct fail)
+            context = self._llm_driven_retrieval(question)
+
         if not context:
             return "❌ Không tìm thấy dữ liệu liên quan."
-        
-        # 3. Answer generation
+
+        # THỰC HIỆN 3: LLM generate answer (luôn dùng LLM)
         answer = self.answer_generator.generate_answer(
             question=question,
             context=context
         )
-        
+
         return answer
-    
-    def _retrieve_context(self, intent: Dict[str, Any]) -> str:
-        """Retrieve context from graph based on intent."""
-        intent_type = intent.get("intent", "").upper()
-        person_name = intent.get("person", "")
-        company_name = intent.get("company", "")
-        relationship_type = intent.get("relationship_type", "")
+
+    def _direct_search(self, question: str) -> str:
+        """
+        Direct search - Trích xuất tên từ câu hỏi và query trực tiếp.
+        Nhanh nhất - không cần LLM call cho bước này.
+        """
+        # Trích xuất tên người từ câu hỏi ( Vietnamesepattern)
+        # Pattern: "X là ai", "X sinh năm", "X kết thúc", etc.
+        name_patterns = [
+            r'([A-ZÀ-Ỵ][a-zà-ỵ\s]+)(?=\s+là\s+)',  # X là ai
+            r'([A-ZÀ-Ỵ][a-zà-ỵ\s]+)(?=\s+sinh\s+)',  # X sinh năm
+            r'([A-ZÀ-Ỵ][a-zà-ỵ\s]+)(?=\s+mất\s+)',  # X mất năm
+            r'([A-ZÀ-Ỵ][a-zà-ỵ\s]+)(?=\s+chết\s+)',  # X chết năm
+        ]
         
-        # Handle person-related queries
-        if person_name:
-            if intent_type == "FIND_PERSON_PROFILE":
-                result = self.graph_retriever.retrieve_person_full_profile(person_name)
-                return result.get("context", "")
-            
-            elif intent_type in ["FIND_BORN_IN", "FIND_WORKED_IN", "FIND_ACTIVE_IN", 
-                                 "FIND_ACHIEVEMENTS", "FIND_INFLUENCERS"]:
-                # Map intent to relationship type
-                intent_to_rel = {
-                    "FIND_BORN_IN": "BORN_IN",
-                    "FIND_WORKED_IN": "WORKED_IN",
-                    "FIND_ACTIVE_IN": "ACTIVE_IN",
-                    "FIND_ACHIEVEMENTS": "ACHIEVED",
-                    "FIND_INFLUENCERS": "INFLUENCED_BY"
-                }
-                rel_type = intent_to_rel.get(intent_type) or relationship_type
-                if rel_type:
-                    result = self.graph_retriever.retrieve_by_relationship_type(person_name, rel_type)
-                    return result.get("context", "")
-            
-            elif intent_type == "FIND_COMPANY":
-                result = self.graph_retriever.retrieve_by_person(person_name)
-                return result.get("context", "")
-            
-            # Default: return full profile
-            else:
-                result = self.graph_retriever.retrieve_person_full_profile(person_name)
-                return result.get("context", "")
+        name = None
+        for pattern in name_patterns:
+            match = re.search(pattern, question)
+            if match:
+                name = match.group(1).strip()
+                break
         
-        # Handle company-related queries
-        if company_name and intent_type == "FIND_FOUNDER":
-            result = self.graph_retriever.retrieve_by_company(company_name)
-            return result.get("context", "")
+        if not name:
+            return ""
         
-        # Handle relationship-specific queries
-        if relationship_type and person_name:
-            result = self.graph_retriever.retrieve_by_relationship_type(person_name, relationship_type)
-            return result.get("context", "")
-        
+        # Query trực tiếp không cần LLM
+        return self._search_by_type("Person", name)
+
+    def _llm_driven_retrieval(self, question: str) -> str:
+        """LLM phân tích câu hỏi → trích xuất keywords → query graph."""
+        schema = self._get_graph_schema()
+
+        prompt = f"""Phân tích câu hỏi và trích xuất TÊN chính xác của nhân vật/đối tượng.
+
+Schema graph: {schema}
+
+Câu hỏi: {question}
+
+Trả về JSON (chỉ 1 keyword quan trọng nhất - tên nhân vật):
+{{
+    "keywords": ["tên nhân vật chính"],
+    "node_types": ["Person"]
+}}
+
+Chỉ trả về JSON."""
+
+        try:
+            response = call_llm(prompt, model=self.model, temperature=0.1)
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            if match:
+                plan = json.loads(match.group())
+                return self._execute_cypher_query(plan)
+        except Exception as e:
+            print(f"❌ Lỗi: {e}")
         return ""
+
+    def _get_graph_schema(self) -> str:
+        """Lấy schema của graph - dùng cache."""
+        if QueryPipeline._schema_cache:
+            return QueryPipeline._schema_cache
+            
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            result = session.run("""
+                MATCH (n)
+                RETURN labels(n)[0] as type, count(*) as count
+                LIMIT 20
+            """)
+            types = [f"{r['type']}: {r['count']}" for r in result]
+            
+            result = session.run("""
+                MATCH ()-[r]->()
+                RETURN type(r) as rel_type
+                LIMIT 20
+            """)
+            rels = [r["rel_type"] for r in result]
+            
+        QueryPipeline._schema_cache = "Nodes: " + ", ".join(types) + " | Relationships: " + ", ".join(rels)
+        return QueryPipeline._schema_cache
+
+    def _execute_cypher_query(self, plan: Dict) -> str:
+        """Execute Cypher query dựa trên plan từ LLM."""
+        keywords = plan.get("keywords", [])
+        node_types = plan.get("node_types", ["Person"])
+        
+        contexts = []
+        
+        # Gộp tất cả keywords thành 1 query
+        all_keywords = [kw for kw in keywords for nt in node_types]
+        
+        for kw in all_keywords:
+            for nt in node_types:
+                ctx = self._search_by_type(nt, kw)
+                if ctx:
+                    contexts.append(ctx)
+        
+        if not contexts:
+            ctx = self._search_all(keywords)
+            if ctx:
+                contexts.append(ctx)
+        
+        return "\n\n".join(filter(None, contexts))
+
+    def _search_by_type(self, node_type: str, key: str) -> str:
+        """Tìm node theo type và key - lấy tất cả properties."""
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            result = session.run(f"""
+                MATCH (n:{node_type})
+                WHERE n.name CONTAINS $key OR n.value CONTAINS $key
+                OPTIONAL MATCH (n)<-[r]-(p:Person)
+                RETURN n.name as name, 
+                       n.role as role,
+                       n.birth_year as birth_year,
+                       n.death_year as death_year,
+                       n.description as description,
+                       n.value as value,
+                       collect(DISTINCT p.name) as related_persons,
+                       collect(DISTINCT type(r)) as relationships
+                LIMIT 5
+            """, key=key)
+
+            lines = []
+            for r in result:
+                name = r["name"]
+                role = r["role"] or ""
+                birth = r["birth_year"] or ""
+                death = r["death_year"] or ""
+                desc = r["description"] or ""
+                value = r["value"] or ""
+                persons = [p for p in r["related_persons"] if p]
+                rels = [rel for rel in r["relationships"] if rel]
+                
+                parts = [f"[{node_type}] {name}"]
+                
+                if role:
+                    parts.append(f"Vai trò: {role}")
+                if value:
+                    parts.append(f"Tên: {value}")
+                if birth:
+                    parts.append(f"Sinh: {birth}")
+                if death:
+                    parts.append(f"Mất: {death}")
+                if desc:
+                    parts.append(f"Mô tả: {desc}")
+                if persons:
+                    parts.append(f"Liên quan: {', '.join(persons[:3])}")
+                if rels:
+                    parts.append(f"Quan hệ: {', '.join(set(rels))}")
+                    
+                lines.append(" | ".join(parts))
+
+            return "\n".join(lines)
+
+    def _search_all(self, keywords: list) -> str:
+        """Tìm tất cả nodes khớp với keywords."""
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            or_clause = " OR ".join([f"n.name CONTAINS '{kw}'" for kw in keywords])
+            
+            result = session.run(f"""
+                MATCH (n)
+                WHERE {or_clause}
+                RETURN labels(n)[0] as type, n.name as name
+                LIMIT 20
+            """)
+
+            lines = []
+            for r in result:
+                lines.append(f"[{r['type']}] {r['name']}")
+            
+            return "\n".join(lines)
 
 
 def ask_agent(question: str) -> str:
-    """
-    Convenience function for backward compatibility.
-    
-    Args:
-        question: User question
-        
-    Returns:
-        Generated answer
-    """
     pipeline = QueryPipeline()
     return pipeline.process_query(question)
-

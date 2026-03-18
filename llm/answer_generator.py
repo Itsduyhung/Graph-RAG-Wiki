@@ -5,54 +5,85 @@ from .llm_client import call_llm
 from .prompt_templates import ANSWER_PROMPT, CONTEXT_SYNTHESIS_PROMPT
 
 
+# Prompt gộp - vừa trích xuất intent vừa trả lời
+COMBINED_PROMPT = """Dựa vào câu hỏi và context từ graph, trả lời bằng tiếng Việt.
+
+Câu hỏi: {question}
+
+Context từ graph:
+{context}
+
+Hướng dẫn:
+- Đọc câu hỏi để hiểu người dùng muốn hỏi gì
+- Tìm thông tin liên quan trong context
+- Trả lời ngắn gọn, chính xác bằng tiếng Việt
+- Nếu context không có thông tin cần thiết, trả lời: "Không có thông tin về vấn đề này."
+
+Trả lời:"""
+
+
 class AnswerGenerator:
-    """Generate answers from retrieved graph context - sử dụng Ollama."""
-    
+    """Generate answers from retrieved graph context."""
+
     def __init__(self, model: Optional[str] = None):
-        """
-        Initialize answer generator.
-        
-        Args:
-            model: Tên model Ollama (mặc định từ env OLLAMA_MODEL)
-        """
         self.model = model
-    
+
     def generate_answer(
-        self, 
-        question: str, 
-        context: str, 
+        self,
+        question: str,
+        context: str,
         use_synthesis: bool = True,
         temperature: Optional[float] = None
     ) -> str:
         """
-        Generate answer from question and context.
-        
+        Generate answer from question and context - combined approach.
+
         Args:
             question: User question
             context: Retrieved context from graph
             use_synthesis: Use advanced synthesis prompt
             temperature: Temperature cho LLM generation
-        
+
         Returns:
             Generated answer
         """
         if not context:
             return "❌ Không tìm thấy dữ liệu liên quan."
-        
-        if use_synthesis:
-            prompt = CONTEXT_SYNTHESIS_PROMPT.format(
-                graph_context=context,
-                question=question
-            )
-        else:
-            prompt = ANSWER_PROMPT.format(
-                context=context,
-                question=question
-            )
-        
+
+        # Escape { and } to avoid format string errors
+        escaped_context = context.replace("{", "{{").replace("}", "}}")
+        escaped_question = question.replace("{", "{{").replace("}", "}}")
+
+        # Use combined prompt - directly answer without separate intent extraction
+        prompt = COMBINED_PROMPT.format(
+            context=escaped_context,
+            question=escaped_question
+        )
+
         try:
-            answer = call_llm(prompt, model=self.model, temperature=temperature)
+            answer = call_llm(prompt, model=self.model, temperature=temperature or 0.7)
             return answer
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"
+
+    def generate_answer_with_intent(
+        self,
+        question: str,
+        context: str,
+        intent: Dict[str, Any] = None,
+        temperature: Optional[float] = None
+    ) -> str:
+        """
+        Generate answer with pre-extracted intent (for optimization).
+
+        Args:
+            question: User question
+            context: Retrieved context from graph
+            intent: Pre-extracted intent (optional)
+            temperature: Temperature cho LLM generation
+
+        Returns:
+            Generated answer
+        """
+        return self.generate_answer(question, context, temperature=temperature)
 

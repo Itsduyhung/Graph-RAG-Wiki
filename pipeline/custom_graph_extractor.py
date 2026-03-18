@@ -13,43 +13,36 @@ from llm.llm_client import call_llm
 load_dotenv()
 
 
-EXTRACTION_PROMPT = """Phân tích đoạn văn bản sau và trích xuất thông tin có cấu trúc về lịch sử, thành tựu, sự kiện và khái niệm. 
-LƯU Ý: TẤT CẢ DỮ LIỆU PHẢI CÓ TÊN TIẾNG VIỆT, KHÔNG ĐƯỢC DỪA TIẾNG ANH.
+EXTRACTION_PROMPT = """Phân tích đoạn văn bản sau và trích xuất TẤT CẢ thông tin có thể được.
+KHÔNG giới hạn bởi bất kỳ schema hay loại node nào - hãy để LLM tự quyết định!
 
-Phân biệt rõ giữa:
-- ACHIEVEMENT (Thành tựu): Những công trình, cải cách, thành quả có ý nghĩa lãnh liều bởi một người
-- EVENT (Sự kiện): Những giai đoạn, cuộc chiến, phong trào có tham gia của nhiều người
+Nhiệm vụ:
+1. Đọc kỹ đoạn văn
+2. Xác định TẤT CẢ các thực thể (entities) quan trọng
+3. Xác định các mối quan hệ giữa các thực thể đó
+4. Xác định các thuộc tính của mỗi thực thể
 
-Với các mối quan hệ giữa Person, cần cụ thể loại quan hệ:
-- FATHER_OF / MOTHER_OF (cha/mẹ của)
-- CHILD_OF (con của)
-- SPOUSE_OF / MARRIED_TO (vợ/chồng của)
-- SIBLING_OF (anh em ruột của)
-- MENTOR_OF / STUDENT_OF (sư phụ/học trò)
-- ALLY_OF (đồng minh)
-- ENEMY_OF (kẻ thù)
-- FRIEND_OF (bạn)
-- SUCCESSOR_OF (kế thừa)
+Nguyên tắc:
+- Trích xuất TẤT CẢ thông tin được đề cập, không bỏ sót
+- Đặc biệt chú ý: tên người, ngày tháng, địa danh, sự kiện, thành tựu, các mối quan hệ
+- Nếu thấy có "tên khác", "còn gọi là", "biệt danh", "tên chữ Hán" -> trích xuất làm thực thể riêng và link với thực thể chính
+- Nếu thấy có quan hệ "cha của", "con của", "vợ của", "thầy của" -> trích xuất làm relationship
 
-Trả về JSON object với cấu trúc CHÍNH XÁC này:
+Đoạn văn bản cần phân tích:
+{{text}}
+
+Format JSON output:
 {{
-    "persons": [{{"name": "...", "role": "...", "birth_year": null, "death_year": null}}],
-    "achievements": [{{"name": "...", "year": null, "description": "...", "person_name": "..."}}],
-    "events": [{{"name": "...", "year": null, "description": "...", "event_type": "sự kiện|cuộc chiến|phong trào|giai đoạn"}}],
-    "eras": [{{"name": "...", "start_year": null, "end_year": null, "description": "..."}}],
-    "fields": [{{"name": "...", "category": "...", "description": "..."}}],
-    "person_relationships": [
-        {{"from_name": "...", "rel_type": "FATHER_OF|MOTHER_OF|CHILD_OF|SPOUSE_OF|SIBLING_OF|MENTOR_OF|STUDENT_OF|ALLY_OF|ENEMY_OF|FRIEND_OF|SUCCESSOR_OF", "to_name": "..."}}
+    "nodes": [
+        {{"id": "unique_id", "type": "Person", "name": "Tên chính", "properties": {{"key": "value"}}}},
+        {{"id": "name_1", "type": "Name", "name": "Tên gọi khác", "properties": {{"name_type": "birth_name"}}, "linked_to": "unique_id"}}
     ],
     "relationships": [
-        {{"from_name": "...", "from_type": "Person|Achievement|Event|Era|Field", "rel_type": "ACHIEVED|PARTICIPATED_IN|ACTIVE_IN|BELONGS_TO_DYNASTY|HAS_ROLE", "to_name": "...", "to_type": "Person|Achievement|Event|Era|Field"}}
+        {{"from": "unique_id", "type": "HAS_NAME", "to": "name_1"}}
     ]
 }}
 
-Đoạn văn bản:
-{{text}}
-
-CHỈ TRẢ VỀ JSON object, KHÔNG CÓ TEXT KHÁC.
+CHỈ TRẢ VỀ JSON, KHÔNG CÓ TEXT KHÁC.
 """
 
 
@@ -74,22 +67,22 @@ class CustomGraphExtractor:
     ) -> Dict[str, Any]:
         """
         Extract nodes and relationships from text using LLM.
-        
+
         Args:
             text: Content to extract from
             source_chunk_id: ID of source chunk
             target_person: Name of main person (optional) - if provided, filter results to only include info about this person
-        
+
         Returns:
-            dict with keys: persons, achievements, events, eras, fields, relationships, person_relationships
+            dict with extracted nodes and relationships (flexible format)
         """
         # Build prompt by substituting text into template
         additional_instruction = ""
         if target_person:
             additional_instruction = f"\n\n⚠️ QUAN TRỌNG: Chỉ trích xuất thông tin TRỰC TIẾP liên quan đến '{target_person}'. KHÔNG trích xuất thông tin của các người khác trừ khi họ có quan hệ trực tiếp với '{target_person}'."
-        
+
         prompt = EXTRACTION_PROMPT.replace("{{text}}", text) + additional_instruction
-        
+
         try:
             response = call_llm(prompt, model=self.model, temperature=0.2)
             # Parse JSON from response
@@ -103,53 +96,99 @@ class CustomGraphExtractor:
                     data = json.loads(json_match.group())
                 else:
                     print(f"⚠️  Failed to extract JSON from response: {response[:200]}")
-                    return {
-                        "persons": [],
-                        "achievements": [],
-                        "events": [],
-                        "eras": [],
-                        "fields": [],
-                        "relationships": [],
-                        "person_relationships": [],
-                    }
+                    return {"nodes": [], "relationships": []}
             except Exception as e:
                 print(f"⚠️  Error parsing LLM response: {e}")
-                return {
-                    "persons": [],
-                    "achievements": [],
-                    "events": [],
-                    "eras": [],
-                    "fields": [],
-                    "relationships": [],
-                    "person_relationships": [],
-                }
+                return {"nodes": [], "relationships": []}
 
-        # Validate structure
-        data.setdefault("persons", [])
-        data.setdefault("achievements", [])
-        data.setdefault("events", [])
-        data.setdefault("eras", [])
-        data.setdefault("fields", [])
+        # Ensure data has expected keys
+        data.setdefault("nodes", [])
         data.setdefault("relationships", [])
-        data.setdefault("person_relationships", [])
 
         return data
 
     def build_from_extraction(self, extracted_data: Dict[str, Any]) -> Tuple[int, int]:
         """
-        Build graph from extracted data.
-        
+        Build graph from extracted data - flexible format.
+
         Returns:
             (nodes_created, relationships_created)
         """
         nodes: List[Dict[str, Any]] = []
         rels: List[Dict[str, Any]] = []
 
-        # Create Person nodes
+        # Build node lookup from node id -> node info
+        node_lookup: Dict[str, Dict[str, Any]] = {}
+
+        # Process nodes from flexible format
+        for node in extracted_data.get("nodes", []):
+            node_id = node.get("id")
+            node_type = node.get("type", "Unknown")
+            node_name = node.get("name", "")
+            node_props = node.get("properties", {})
+
+            # Store for lookup
+            if node_id:
+                node_lookup[node_id] = node
+
+            # Determine identifier based on node type
+            if node_type == "Name":
+                identifier = {"value": node_name}
+            else:
+                identifier = {"name": node_name}
+
+            # Create node for Neo4j
+            nodes.append({
+                "type": node_type,
+                "identifier": identifier,
+                "properties": node_props
+            })
+
+        # Process relationships
+        for rel in extracted_data.get("relationships", []):
+            from_id = rel.get("from")
+            to_id = rel.get("to")
+            rel_type = rel.get("type", "RELATED_TO")
+
+            # Get source and target node info
+            from_node = node_lookup.get(from_id, {})
+            to_node = node_lookup.get(to_id, {})
+
+            from_type = from_node.get("type", "Unknown")
+            to_type = to_node.get("type", "Unknown")
+            from_name = from_node.get("name", from_id)
+            to_name = to_node.get("name", to_id)
+
+            # Determine identifiers based on types
+            if from_type == "Name":
+                from_id_dict = {"value": from_name}
+            else:
+                from_id_dict = {"name": from_name}
+
+            if to_type == "Name":
+                to_id_dict = {"value": to_name}
+            else:
+                to_id_dict = {"name": to_name}
+
+            # Create relationship
+            rels.append({
+                "from_type": from_type,
+                "from_id": from_id_dict,
+                "rel_type": rel_type,
+                "to_type": to_type,
+                "to_id": to_id_dict,
+                "properties": {},
+            })
+
+        # Legacy format support (persons, achievements, events, etc.)
         for person in extracted_data.get("persons", []):
+            person_name = person.get("name")
+            if not person_name:
+                continue
+
             nodes.append({
                 "type": "Person",
-                "identifier": {"name": person.get("name")},
+                "identifier": {"name": person_name},
                 "properties": {
                     "role": person.get("role"),
                     "birth_year": person.get("birth_year"),
@@ -157,64 +196,63 @@ class CustomGraphExtractor:
                 }
             })
 
-        # Create Achievement nodes
+            for name_entry in person.get("names", []):
+                name_value = name_entry.get("value")
+                name_type = name_entry.get("type", "alias")
+                if name_value:
+                    nodes.append({
+                        "type": "Name",
+                        "identifier": {"value": name_value},
+                        "properties": {"name_type": name_type}
+                    })
+                    rels.append({
+                        "from_type": "Person",
+                        "from_id": {"name": person_name},
+                        "rel_type": "HAS_NAME",
+                        "to_type": "Name",
+                        "to_id": {"value": name_value},
+                        "properties": {"name_type": name_type},
+                    })
+
         for achievement in extracted_data.get("achievements", []):
             nodes.append({
                 "type": "Achievement",
                 "identifier": {"name": achievement.get("name")},
-                "properties": {
-                    "year": achievement.get("year"),
-                    "description": achievement.get("description"),
-                }
+                "properties": {"year": achievement.get("year"), "description": achievement.get("description")}
             })
 
-        # Create Event nodes (NEW)
         for event in extracted_data.get("events", []):
             nodes.append({
                 "type": "Event",
                 "identifier": {"name": event.get("name")},
-                "properties": {
-                    "year": event.get("year"),
-                    "description": event.get("description"),
-                    "event_type": event.get("event_type"),
-                }
+                "properties": {"year": event.get("year"), "description": event.get("description")}
             })
 
-        # Create Era nodes
         for era in extracted_data.get("eras", []):
             nodes.append({
                 "type": "Era",
                 "identifier": {"name": era.get("name")},
-                "properties": {
-                    "start_year": era.get("start_year"),
-                    "end_year": era.get("end_year"),
-                    "description": era.get("description"),
-                }
+                "properties": {"start_year": era.get("start_year"), "end_year": era.get("end_year")}
             })
 
-        # Create Field nodes
         for field in extracted_data.get("fields", []):
             nodes.append({
                 "type": "Field",
                 "identifier": {"name": field.get("name")},
-                "properties": {
-                    "category": field.get("category"),
-                    "description": field.get("description"),
-                }
+                "properties": {"category": field.get("category")}
             })
 
-        # Create relationships
+        # Legacy relationships
         for rel in extracted_data.get("relationships", []):
             rels.append({
                 "from_type": rel.get("from_type", "Person"),
                 "from_id": {"name": rel.get("from_name")},
                 "rel_type": rel.get("rel_type", "RELATED_TO"),
-                "to_type": rel.get("to_type", "Achievement"),
+                "to_type": rel.get("to_type", "Person"),
                 "to_id": {"name": rel.get("to_name")},
                 "properties": {},
             })
 
-        # Create person-to-person relationships (NEW)
         for person_rel in extracted_data.get("person_relationships", []):
             rels.append({
                 "from_type": "Person",

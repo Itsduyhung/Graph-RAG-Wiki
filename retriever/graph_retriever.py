@@ -87,6 +87,7 @@ class GraphRetriever:
         OPTIONAL MATCH (p)-[:FOUNDED]->(company:Company)
         OPTIONAL MATCH (p)-[:PARTICIPATED_IN]->(event:Event)
         OPTIONAL MATCH (event)-[:HAPPENED_AT]->(event_tp:TimePoint)
+        OPTIONAL MATCH (p)-[:HAS_NAME]->(name:Name)
         RETURN 
             p,
             collect(DISTINCT born_tp) AS born_timepoints,
@@ -101,7 +102,8 @@ class GraphRetriever:
             collect(DISTINCT chunk.chunk_id) AS wiki_chunks,
             collect(DISTINCT company.name) AS companies_founded,
             collect(DISTINCT event) AS events,
-            collect(DISTINCT event_tp) AS event_timepoints
+            collect(DISTINCT event_tp) AS event_timepoints,
+            collect(DISTINCT {name: name.value, name_type: name.name_type}) AS names
         """
         
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
@@ -129,6 +131,7 @@ class GraphRetriever:
             companies = record["companies_founded"] or []
             events = [dict(e) for e in (record["events"] or [])]
             event_tps = [dict(tp) for tp in (record["event_timepoints"] or []) if tp]
+            names = [n for n in (record["names"] or []) if n and n.get("name")]
             
             context = self._build_full_person_context(
                 person_name,
@@ -146,6 +149,7 @@ class GraphRetriever:
                 born_tps,
                 died_tps,
                 event_tps,
+                names,
             )
             
             return {
@@ -184,6 +188,19 @@ class GraphRetriever:
         """
         # Map relationship to target node type
         rel_to_node = {
+            # Family relationships
+            "FATHER_OF": "Person",
+            "MOTHER_OF": "Person",
+            "CHILD_OF": "Person",
+            "SPOUSE_OF": "Person",
+            "SIBLING_OF": "Person",
+            "MENTOR_OF": "Person",
+            "STUDENT_OF": "Person",
+            "ALLY_OF": "Person",
+            "ENEMY_OF": "Person",
+            "FRIEND_OF": "Person",
+            "SUCCESSOR_OF": "Person",
+            # Other relationships
             "BORN_IN": "Country",
             "BORN_AT": "TimePoint",
             "DIED_AT": "TimePoint",
@@ -193,10 +210,10 @@ class GraphRetriever:
             "INFLUENCED_BY": "Person",
             "DESCRIBED_IN": "WikiChunk",
             "FOUNDED": "Company",
-            "CHILD_OF": "Person",
             "PARTICIPATED_IN": "Event",
             "HAS_ROLE": "Role",
             "BELONGS_TO_DYNASTY": "Dynasty",
+            "HAS_NAME": "Name",
         }
         
         target_type = rel_to_node.get(relationship_type)
@@ -208,22 +225,65 @@ class GraphRetriever:
                 "error": f"Unknown relationship type: {relationship_type}"
             }
         
-        query = f"""
-        MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:{target_type})
-        RETURN target, r
-        ORDER BY target.name
-        """
-        
-        with self.graph_db.driver.session(database=self.graph_db.database) as session:
-            result = session.run(query, name=person_name)
-            targets = []
-            for record in result:
-                target_props = dict(record["target"])
-                rel_props = dict(record["r"])
-                targets.append({
-                    "target": target_props,
-                    "relationship_properties": rel_props
-                })
+        # Handle Name node differently (uses 'value' instead of 'name')
+        if target_type == "Name":
+            query = f"""
+            MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:Name)
+            RETURN target, r
+            ORDER BY target.value
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                targets = []
+                for record in result:
+                    target_props = dict(record["target"])
+                    rel_props = dict(record["r"])
+                    targets.append({
+                        "target": {"name": target_props.get("value"), **target_props},
+                        "relationship_properties": rel_props
+                    })
+        else:
+            # For family relationships, query both directions
+            family_rels = {"FATHER_OF", "MOTHER_OF", "CHILD_OF", "SPOUSE_OF", "SIBLING_OF", 
+                          "MENTOR_OF", "STUDENT_OF", "ALLY_OF", "ENEMY_OF", "FRIEND_OF", "SUCCESSOR_OF"}
+            
+            if relationship_type in family_rels:
+                # Bidirectional query for family relationships
+                query = f"""
+                MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:{target_type})
+                RETURN target, r, 'outgoing' AS direction
+                UNION
+                MATCH (p:Person {{name: $name}})<-[r:{relationship_type}]-(target:{target_type})
+                RETURN target, r, 'incoming' AS direction
+                """
+                with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                    result = session.run(query, name=person_name)
+                    targets = []
+                    for record in result:
+                        target_props = dict(record["target"])
+                        rel_props = dict(record["r"])
+                        direction = record["direction"]
+                        targets.append({
+                            "target": target_props,
+                            "relationship_properties": rel_props,
+                            "direction": direction
+                        })
+            else:
+                query = f"""
+                MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:{target_type})
+                RETURN target, r
+                ORDER BY target.name
+                """
+                with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                    result = session.run(query, name=person_name)
+                    targets = []
+                    for record in result:
+                        target_props = dict(record["target"])
+                        rel_props = dict(record["r"])
+                        targets.append({
+                            "target": target_props,
+                            "relationship_properties": rel_props
+                        })
         
         return {
             "person": person_name,
@@ -297,8 +357,10 @@ class GraphRetriever:
         born_timepoints: List[Dict[str, Any]],
         died_timepoints: List[Dict[str, Any]],
         event_timepoints: List[Dict[str, Any]],
+        names: List[Dict[str, Any]] = None,
     ) -> str:
         """Build comprehensive context string for person profile."""
+        names = names or []
         lines = [f"Person: {person_name}"]
 
         if person_props.get("aliases") or person_props.get("other_names"):
@@ -329,6 +391,18 @@ class GraphRetriever:
 
         if dynasties:
             lines.append(f"Dynasties: {', '.join(dynasties)}")
+
+        # Names (HAS_NAME relationships)
+        if names:
+            formatted_names = []
+            for n in names:
+                name_val = n.get("name", "")
+                name_type = n.get("name_type", "")
+                if name_type:
+                    formatted_names.append(f"{name_val} ({name_type})")
+                else:
+                    formatted_names.append(name_val)
+            lines.append(f"Other names: {', '.join(formatted_names)}")
         
         if countries:
             lines.append(f"Born In: {', '.join(countries)}")
@@ -400,12 +474,70 @@ class GraphRetriever:
         relationship_type: str, 
         targets: List[Dict[str, Any]]
     ) -> str:
-        """Build context string for specific relationship."""
-        if not targets:
-            return f"{person_name} has no {relationship_type} relationships"
+        """Build context string for specific relationship in Vietnamese."""
+        # Map relationship types to Vietnamese
+        rel_to_vietnamese = {
+            "FATHER_OF": "cha",
+            "MOTHER_OF": "mẹ", 
+            "CHILD_OF": "con",
+            "SPOUSE_OF": "vợ/chồng",
+            "SIBLING_OF": "anh chị em",
+            "MENTOR_OF": "thầy/mentor",
+            "STUDENT_OF": "học trò",
+            "ALLY_OF": "đồng minh",
+            "ENEMY_OF": "kẻ thù",
+            "FRIEND_OF": "bạn",
+            "SUCCESSOR_OF": "người kế thừa",
+            "BORN_IN": "sinh tại",
+            "BORN_AT": "sinh năm",
+            "DIED_AT": "mất năm",
+            "WORKED_IN": "làm việc trong",
+            "ACTIVE_IN": "hoạt động trong",
+            "ACHIEVED": "đạt được",
+            "INFLUENCED_BY": "bị ảnh hưởng bởi",
+            "PARTICIPATED_IN": "tham gia",
+            "HAS_ROLE": "có vai trò",
+            "BELONGS_TO_DYNASTY": "thuộc triều đại",
+            "HAS_NAME": "còn được biết đến với tên",
+        }
         
-        target_names = [t["target"].get("name", "Unknown") for t in targets]
-        return f"{person_name} - {relationship_type}: {', '.join(target_names)}"
+        vietnamese_rel = rel_to_vietnamese.get(relationship_type, relationship_type)
+        
+        if not targets:
+            return f"{person_name} không có thông tin về {vietnamese_rel}"
+        
+        # Format target names with direction info for family relationships
+        family_rels = {"FATHER_OF", "MOTHER_OF", "CHILD_OF", "SPOUSE_OF", "SIBLING_OF"}
+        
+        formatted_targets = []
+        for t in targets:
+            target_name = t["target"].get("name", "Unknown")
+            direction = t.get("direction", "outgoing")
+            
+            if relationship_type in family_rels:
+                if relationship_type == "CHILD_OF" and direction == "incoming":
+                    # (someone)-[:CHILD_OF]->(person) means person is the parent
+                    formatted_targets.append(f"{target_name} (con của)")
+                elif relationship_type == "FATHER_OF" and direction == "incoming":
+                    formatted_targets.append(f"{target_name} (cha của)")
+                elif relationship_type == "MOTHER_OF" and direction == "incoming":
+                    formatted_targets.append(f"{target_name} (mẹ của)")
+                elif relationship_type == "SPOUSE_OF":
+                    formatted_targets.append(f"{target_name}")
+                else:
+                    formatted_targets.append(target_name)
+            else:
+                # For HAS_NAME, include the name type
+                if relationship_type == "HAS_NAME":
+                    name_type = t.get("relationship_properties", {}).get("name_type", "")
+                    if name_type:
+                        formatted_targets.append(f"{target_name} ({name_type})")
+                    else:
+                        formatted_targets.append(target_name)
+                else:
+                    formatted_targets.append(target_name)
+        
+        return f"{person_name} - {vietnamese_rel}: {', '.join(formatted_targets)}"
 
     def search_person_by_text(self, text: str, limit: int = 3) -> Dict[str, Any]:
         """
@@ -444,5 +576,70 @@ class GraphRetriever:
 
         context = "\n\n".join(lines)
         return {"persons": persons, "context": context}
+
+    def find_person_by_name(self, name_query: str) -> Dict[str, Any]:
+        """
+        Tìm Person thông qua Name node (tên gọi khác, biệt danh...).
+        Ví dụ: query "Vĩnh Thụy" sẽ tìm được Person "Bảo Đại" thông qua HAS_NAME relationship.
+        
+        Args:
+            name_query: Tên cần tìm kiếm
+            
+        Returns:
+            Dictionary với person info hoặc empty nếu không tìm thấy
+        """
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            # First try direct match on Person.name
+            result = session.run(
+                """
+                MATCH (p:Person {name: $q})
+                RETURN p
+                LIMIT 1
+                """,
+                q=name_query,
+            )
+            persons = [dict(record["p"]) for record in result]
+            
+            if persons:
+                return {"person": persons[0], "via": "direct_name"}
+            
+            # Then try finding through Name node
+            result = session.run(
+                """
+                MATCH (n:Name {value: $q})<-[:HAS_NAME]-(p:Person)
+                RETURN p, n
+                LIMIT 1
+                """,
+                q=name_query,
+            )
+            records = list(result)
+            
+            if records:
+                person = dict(records[0]["p"])
+                name_node = dict(records[0]["n"])
+                return {
+                    "person": person, 
+                    "via": "name_node",
+                    "original_name": name_node.get("value"),
+                    "name_type": name_node.get("name_type")
+                }
+            
+            # Try partial match on Name.value
+            result = session.run(
+                """
+                MATCH (n:Name)<-[:HAS_NAME]-(p:Person)
+                WHERE n.value CONTAINS $q
+                RETURN p, n
+                LIMIT 5
+                """,
+                q=name_query,
+            )
+            records = list(result)
+            
+            if records:
+                persons = [{"person": dict(r["p"]), "name_node": dict(r["n"])} for r in records]
+                return {"persons": persons, "via": "name_node_partial"}
+        
+        return {"person": None, "via": None}
 
 
