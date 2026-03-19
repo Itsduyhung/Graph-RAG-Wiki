@@ -16,6 +16,7 @@ YESCALE_BASE_URL = os.getenv(
 )
 YESCALE_MODEL = os.getenv("YESCALE_MODEL", "gemini-2.0-flash")
 YESCALE_API_KEY = os.getenv("YESCALE_API_KEY")
+YESCALE_TIMEOUT = int(os.getenv("YESCALE_TIMEOUT", "300" if "2.5-pro" in os.getenv("YESCALE_MODEL", "") else "120"))
 
 
 def call_llm(
@@ -32,6 +33,14 @@ def call_llm(
         raise RuntimeError(
             "YESCALE_API_KEY chưa được cấu hình trong environment (.env)."
         )
+
+    # Auto-detect timeout based on model (slow models need longer timeout)
+    effective_model = model or YESCALE_MODEL
+    if "2.5" in effective_model:
+        timeout = 300
+    else:
+        timeout = 120
+    print(f"[DEBUG] call_llm: model={effective_model}, timeout={timeout}")
 
     payload = {
         "model": model or YESCALE_MODEL,
@@ -55,7 +64,7 @@ def call_llm(
             YESCALE_BASE_URL,
             json=payload,
             headers=headers,
-            timeout=120,
+            timeout=timeout,
         )
         response.raise_for_status()
         data = response.json()

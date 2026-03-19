@@ -61,7 +61,8 @@ class AnswerGenerator:
         )
 
         try:
-            answer = call_llm(prompt, model=self.model, temperature=temperature or 0.7)
+            # Dùng flash-lite cho answer generation cho nhanh
+            answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.7)
             return answer
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"

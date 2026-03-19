@@ -28,8 +28,8 @@ def generate_embeddings(
 
     if text_properties is None:
         text_properties = {
-            "Person": ["name", "biography"],
-            "Name": ["value"],
+            "Person": ["name", "full_name", "other_name", "nickname", "alias", "description", "title"],
+            "Name": ["value", "name_type"],
             "Dynasty": ["name", "description"],
             "Achievement": ["name", "description"],
             "Event": ["name", "description"],
@@ -88,6 +88,25 @@ def generate_embeddings(
             logger.info(f"Updated {count} {node_type} nodes")
 
 
+def reset_embeddings(node_types: list = None):
+    """Reset embeddings cho các nodes (để regenerate)."""
+    if node_types is None:
+        node_types = ["Person", "Name", "Dynasty"]
+
+    graph_db = GraphDB()
+
+    with graph_db.driver.session(database=graph_db.database) as session:
+        for node_type in node_types:
+            result = session.run(f"""
+                MATCH (n:{node_type})
+                WHERE n.embedding IS NOT NULL
+                REMOVE n.embedding
+                RETURN count(n) as count
+            """)
+            for r in result:
+                logger.info(f"Reset {r['count']} {node_type} nodes")
+
+
 def create_vector_indexes():
     """Tạo vector indexes trong Neo4j."""
     graph_db = GraphDB()
@@ -132,6 +151,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Generate embeddings for Neo4j")
     parser.add_argument("--create-indexes", action="store_true", help="Create vector indexes first")
+    parser.add_argument("--reset", action="store_true", help="Reset existing embeddings before generating")
     parser.add_argument("--node-types", nargs="+", default=["Person", "Name", "Dynasty"],
                         help="Node types to process")
     parser.add_argument("--batch-size", type=int, default=100, help="Batch size")
@@ -141,6 +161,10 @@ if __name__ == "__main__":
     if args.create_indexes:
         logger.info("Creating vector indexes...")
         create_vector_indexes()
+
+    if args.reset:
+        logger.info("Resetting embeddings...")
+        reset_embeddings(args.node_types)
 
     logger.info(f"Generating embeddings for: {args.node_types}")
     generate_embeddings(
