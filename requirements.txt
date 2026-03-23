@@ -1,0 +1,15 @@
+neo4j
+streamlit
+requests
+python-dotenv
+pydantic>=2.0.0
+pytest>=7.0.0
+pyyaml>=6.0.0
+fastapi
+uvicorn
+langchain
+langchain-community
+langchain-experimental
+langchain-openai
+psycopg2-binary
+underthesea>=6.0.0
