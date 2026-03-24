@@ -152,6 +152,35 @@ class QueryPipeline:
         "đăng quang": "PERFORMED",
         "lên ngôi": "PERFORMED",
         "phong": "PERFORMED",
+        
+        # === FIX: Temporal intents (QUAN TRỌNG cho query về ngày sinh/mất) ===
+        # Sinh / Ra đời
+        "sinh năm": "birth_date",
+        "ngày sinh": "birth_date",
+        "năm sinh": "birth_date",
+        "sinh tháng": "birth_date",
+        "ra đời": "birth_date",
+        "chào đời": "birth_date",
+        "hạ sinh": "birth_date",
+        # Mất / Qua đời
+        "mất năm": "death_date",
+        "ngày mất": "death_date",
+        "năm mất": "death_date",
+        "mất lúc": "death_date",
+        "qua đời": "death_date",
+        "từ trần": "death_date",
+        "băng hà": "death_date",
+        "tắt thở": "death_date",
+        "hưởng thọ": "death_date",
+        # Lên ngôi / Đăng quang
+        "lên ngôi": "reign_start",
+        "đăng quang": "reign_start",
+        "đăng cơ": "reign_start",
+        "nhận ngôi": "reign_start",
+        # Thôi ngôi / Mất ngôi
+        "thoái vị": "reign_end",
+        "thôi ngôi": "reign_end",
+        "mất ngôi": "reign_end",
     }
 
     # Biến thể câu hỏi - synonym mapping (đồng nghĩa, cùng ý nghĩa)
@@ -278,9 +307,11 @@ class QueryPipeline:
         entity = self._extract_entity(question)
         keywords = self._extract_keywords(question)
 
-        # 1.2 Intent detection
+        # 1.2 Intent detection - Ưu tiên keyword DÀI HƠN trước
         intent = "identity"  # default
-        for keyword, mapped_intent in self.INTENT_MAPPING.items():
+        # Sắp xếp theo độ dài giảm dần để ưu tiên "sinh năm" > "sinh"
+        sorted_mappings = sorted(self.INTENT_MAPPING.items(), key=lambda x: len(x[0]), reverse=True)
+        for keyword, mapped_intent in sorted_mappings:
             if keyword in question_lower:
                 intent = mapped_intent
                 break
@@ -306,6 +337,8 @@ class QueryPipeline:
         DB Structure: (:Word {name: "đăng quang"})-[:SYNONYM]->(:Word {name: "lên ngôi"})
         
         Cache kết quả trong class variable để không query lại nhiều lần.
+        
+        FIX: Nếu DB không có synonym, dùng fallback groups ngay.
         """
         if self._synonym_cache:
             return self._synonym_cache
@@ -323,10 +356,12 @@ class QueryPipeline:
                 """)
                 
                 synonym_map: Dict[str, set] = {}
+                count = 0
                 for r in result:
                     w1 = r.get("word1", "")
                     w2 = r.get("word2", "")
                     if w1 and w2:
+                        count += 1
                         if w1 not in synonym_map:
                             synonym_map[w1] = set()
                         if w2 not in synonym_map:
@@ -338,10 +373,17 @@ class QueryPipeline:
                 for word, synonyms in synonym_map.items():
                     self._synonym_cache[word] = list(synonyms)
                 
-                print(f"  [Synonyms] Loaded {len(self._synonym_cache)} synonyms from DB")
+                print(f"  [Synonyms] Loaded {count} synonym pairs from DB")
+                
+                # FIX: Nếu DB không có synonym (count = 0), dùng fallback
+                if count == 0:
+                    print(f"  [Synonyms] DB has no synonyms, using fallback groups")
+                    return self._build_synonym_cache_from_groups()
+                
                 return self._synonym_cache
                 
         except Exception as e:
+            # FIX: Bắt exception do label/relationship không tồn tại và dùng fallback
             print(f"  [Synonyms] DB load failed: {e}, using fallback")
             return self._build_synonym_cache_from_groups()
 
@@ -381,6 +423,8 @@ class QueryPipeline:
 
     def _extract_entity(self, question: str) -> str:
         """Trích xuất entity từ câu hỏi."""
+        # === FIX: Ưu tiên PATTERN TRƯỚC ===
+        # Patterns để trích xuất entity
         patterns = [
             r'(?:của|tên|ai là|gì là)\s+(.+?)(?:\?|$)',  # "tên của X", "X là ai"
             r'^(.+?)(?:\s+là\s+ai|\s+là\s+gì|\s+ở\s+đâu)',  # "X là ai"
@@ -390,19 +434,35 @@ class QueryPipeline:
         for pattern in patterns:
             match = re.search(pattern, question)
             if match:
-                return match.group(1).strip()
+                extracted = match.group(1).strip()
+                # Nếu extracted có "sinh/mất/lên ngôi" → loại bỏ
+                temporal_suffixes = ["sinh", "mất", "đăng", "lên ngôi", "thoái vị", "năm nào", "lúc nào"]
+                for suffix in temporal_suffixes:
+                    if extracted.lower().endswith(suffix):
+                        extracted = extracted[:-len(suffix)].strip()
+                if extracted:
+                    return extracted
         
-        # Fallback: word segment và lấy tên riêng
+        # === Nếu không có pattern, dùng word segmentation ===
         if WORD_SEG_AVAILABLE:
             words = underthesea.word_tokenize(question)
-            for i, w in enumerate(words):
+            entity_words = []
+            for w in words:
+                # Skip các từ temporal
+                if w.lower() in ["sinh", "mất", "năm", "lên", "đăng", "ngày", "tháng", "lúc", "thôi", "là", "ai", "gì", "ở", "đâu", "của", "?"]:
+                    continue
                 if w[0].isupper() if w else False:
-                    # Ghép với từ tiếp theo nếu là part of name
-                    if i + 1 < len(words) and words[i + 1][0].isupper():
-                        return f"{w} {words[i + 1]}"
-                    return w
+                    entity_words.append(w)
+            if entity_words:
+                return " ".join(entity_words)
         
-        return question.strip()
+        # Fallback: lấy từ đầu tiên là tên riêng
+        words = question.split()
+        for w in words:
+            if w[0].isupper() if w else False:
+                return w
+        
+        return question.strip().rstrip("?").strip()
 
     def _extract_keywords(self, question: str) -> List[str]:
         """
@@ -425,15 +485,29 @@ class QueryPipeline:
 
         return [w for w in words if w not in stopwords and len(w) > 1]
 
-    def _get_query_variants(self, question: str) -> List[str]:
+    def _get_query_variants(self, question: str, entity: str = None) -> List[str]:
         """
         Tạo các biến thể của câu hỏi để search hiệu quả hơn.
-        VD: "Bảo Đại lên ngôi năm nào?" → ["Bảo Đại đăng quang", "Bảo Đại lên ngôi"]
+        
+        FIX: Thêm LLM để tạo biến thể câu hỏi.
+        VD: "Bảo Đại lên ngôi năm nào?" → 
+            - "Bảo Đại đăng quang năm nào?"
+            - "Ngày tháng năm sinh của Bảo Đại?"
+            - "Bảo Đại sinh thời gian nào?"
         """
         variants = [question]
-
         question_lower = question.lower()
-
+        
+        # === FIX: Dùng LLM để tạo biến thể câu hỏi ===
+        try:
+            llm_variants = self._generate_variants_with_llm(question, entity)
+            if llm_variants:
+                variants.extend(llm_variants)
+                print(f"  [Variants] LLM generated: {len(llm_variants)} variants")
+        except Exception as e:
+            print(f"  [Variants] LLM generation failed: {e}, using rule-based")
+        
+        # === Rule-based variants (fallback) ===
         # Tìm các synonym trong câu hỏi và tạo biến thể
         for key, synonyms in self.QUERY_VARIANTS.items():
             if key in question_lower:
@@ -443,12 +517,47 @@ class QueryPipeline:
                     if variant != question_lower:
                         variants.append(variant)
                 # Cũng thử kết hợp với tên người
-                entity = self._extract_entity(question)
                 if entity:
                     for syn in synonyms[:2]:  # Chỉ lấy 2 synonym đầu
                         variants.append(f"{entity} {syn}")
 
-        return list(set(variants))[:5]  # Giới hạn 5 variants
+        return list(set(variants))[:8]  # Giới hạn 8 variants
+
+    def _generate_variants_with_llm(self, question: str, entity: str = None) -> List[str]:
+        """
+        Dùng LLM để tạo các biến thể câu hỏi.
+        
+        VD: "Bảo Đại sinh năm nào?" → 
+            ["Bảo Đại sinh thời gian nào?", "Ngày tháng năm sinh của Bảo Đại?", ...]
+        """
+        entity_part = f" (entity: {entity})" if entity else ""
+        
+        prompt = f"""Bạn là chuyên gia tạo biến thể câu hỏi tiếng Việt.
+Tạo 3-5 biến thể KHÁC NHAU của câu hỏi sau, giữ nguyên ý nghĩa nhưng dùng từ ngữ khác.{entity_part}
+
+Câu hỏi gốc: "{question}"
+
+YÊU CẦU:
+- Mỗi biến thể phải KHÁC với câu gốc và với nhau
+- Dùng từ đồng nghĩa, cách diễn đạt khác
+- Giữ nguyên entity (tên người/sự kiện)
+- Không thay đổi ý nghĩa câu hỏi
+
+Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải thích."""
+
+        try:
+            response = call_llm(prompt, model=self.model, temperature=0.8)
+            
+            # Parse response - mỗi dòng là 1 variant
+            lines = [line.strip() for line in response.strip().split('\n') if line.strip()]
+            
+            # Filter ra những variant hợp lệ (khác với câu gốc)
+            variants = [v for v in lines if v and v.lower() != question.lower()][:5]
+            
+            return variants
+        except Exception as e:
+            print(f"  [Variants] LLM call failed: {e}")
+            return []
 
     def _infer_target_type(self, question_lower: str, intent: str) -> str:
         """Infer target node type từ câu hỏi."""
@@ -467,31 +576,36 @@ class QueryPipeline:
     def _retrieve_candidates(self, query_info: Dict) -> List[Dict]:
         """
         Tìm kiếm candidates - DB-driven, KHÔNG dùng LLM.
-        Search 2 chiều + Query variants + NAME-FIRST cho alias queries:
-        1. Nếu hỏi về "tên thật/tên khai sinh" → Tìm Name nodes TRƯỚC
-        2. Tìm Name nodes (alias, tên khác)
-        3. Tìm với query variants
-        4. Tìm Person nodes
-        5. Kết hợp kết quả
-
-        Returns:
-            List of candidate nodes với scores
         """
         entity = query_info.get("entity", "")
         keywords = query_info.get("keywords", [])
         intent = query_info.get("intent", "")
-        original_question = query_info.get("original_question", entity)
 
         candidates = []
         seen_ids = set()
 
-        # === 0.0: SYNONYM EXPANSION (DB-driven) ===
-        # VD: ["đăng quang"] → ["đăng quang", "lên ngôi", "đăng cơ", ...]
+        # === DEBUG: Check if entity exists in DB ===
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            debug_result = session.run("""
+                MATCH (p:Person)
+                WHERE toLower(p.name) CONTAINS toLower($entity)
+                RETURN p.name as name, p.birth_date as birth_date, p.death_date as death_date
+                LIMIT 3
+            """, entity=entity)
+            debug_persons = list(debug_result)
+            if debug_persons:
+                print(f"  [DEBUG] DB has Person(s) matching '{entity}':")
+                for p in debug_persons:
+                    print(f"    - {p['name']} (birth: {p.get('birth_date', 'N/A')}, death: {p.get('death_date', 'N/A')})")
+            else:
+                print(f"  [DEBUG] NO Person found in DB matching '{entity}'")
+
+        # === SYNONYM EXPANSION ===
         expanded_keywords = self._expand_query_with_synonyms(keywords)
         if expanded_keywords != keywords:
             print(f"  [Synonyms] Expanded: {keywords} → {expanded_keywords}")
 
-        # === 0.1: NAME-FIRST SEARCH cho "tên thật/birth_name" intent ===
+        # === NAME-FIRST SEARCH cho "tên thật/birth_name" intent ===
         name_intents = ["birth_name", "real_name", "temple_name", "original_name", "regnal_name"]
         if intent in name_intents:
             name_first_candidates = self._search_name_alias_for_entity(entity, intent)
@@ -501,22 +615,21 @@ class QueryPipeline:
                     candidates.append(c)
                     seen_ids.add(c.get("id"))
 
-        # === 0.2: NAME-FIRST SEARCH (tìm alias/tên khác) ===
+        # === NAME-ALIAS SEARCH ===
         name_candidates = self._search_by_name_alias(entity, keywords)
         for c in name_candidates:
             if c.get("id") not in seen_ids:
                 candidates.append(c)
                 seen_ids.add(c.get("id"))
 
-        # === 2.1: FULLTEXT SEARCH với EXPANDED keywords ===
-        # Tìm cả entity và synonyms
+        # === FULLTEXT SEARCH ===
         ft_candidates = self._fulltext_search(entity, expanded_keywords)
         for c in ft_candidates:
             if c.get("id") not in seen_ids:
                 candidates.append(c)
                 seen_ids.add(c.get("id"))
 
-        # === 2.2: SOFT MATCHING (fallback) với synonyms ===
+        # === SOFT MATCHING (fallback) ===
         if len(candidates) < 3:
             soft_candidates = self._soft_matching_search(entity, expanded_keywords)
             for c in soft_candidates:
@@ -524,7 +637,7 @@ class QueryPipeline:
                     candidates.append(c)
                     seen_ids.add(c.get("id"))
 
-        # === 2.3: VECTOR SEARCH (fallback) ===
+        # === VECTOR SEARCH (fallback) ===
         if len(candidates) < 3 and SEMANTIC_AVAILABLE:
             vec_candidates = self._vector_search(entity)
             for c in vec_candidates:
@@ -532,6 +645,27 @@ class QueryPipeline:
                     candidates.append(c)
                     seen_ids.add(c.get("id"))
 
+        # === Sắp xếp theo score và loại bỏ duplicates ===
+        def sort_key(c):
+            source_priority = {
+                "exact_match": 1.0,
+                "name_alias:birth_name": 1.0,
+                "name_alias": 0.9,
+                "fulltext": 0.8,
+                "fulltext_fallback": 0.7,
+                "soft_match": 0.5,
+                "vector": 0.3,
+            }
+            source = c.get("source", "")
+            priority = 0.5
+            for key, val in source_priority.items():
+                if key in source:
+                    priority = val
+                    break
+            return (1 - priority, -c.get("score", 0))
+        
+        candidates.sort(key=sort_key)
+        
         return candidates[:20]
 
     def _search_by_name_alias(self, entity: str, keywords: List[str]) -> List[Dict]:
@@ -570,8 +704,6 @@ class QueryPipeline:
                                 "score": 1.5,
                                 "source": "name_alias"
                             })
-            
-            return candidates
             
             return candidates
 
@@ -640,35 +772,71 @@ class QueryPipeline:
             candidates = []
             search_terms = [entity] + [k for k in keywords if len(k) > 2][:3]
 
-            # Thử fulltext index trước
-            try:
-                result = session.run("""
-                    CALL db.index.fulltext.queryNodes("entityIndex", $query)
-                    YIELD node, score
-                    RETURN node, score
-                    ORDER BY score DESC
-                    LIMIT 10
-                """, query=f"{entity}~")
-                
-                for r in result:
-                    node = r["node"]
-                    nid = node.element_id
-                    candidates.append({
-                        "id": nid,
-                        "type": list(node.labels)[0] if node.labels else "Unknown",
-                        "name": node.get("name", ""),
-                        "properties": dict(node),
-                        "score": r["score"],
-                        "source": "fulltext",
-                        "all_names": self._get_all_names_for_node(session, nid)
-                    })
-                
-                if candidates:
-                    return candidates
-            except:
-                pass  # Fallback to CONTAINS
+            print(f"  [Fulltext] Searching with terms: {search_terms}")
 
-            # Fallback: CONTAINS search
+            # === FIX: Ưu tiên EXACT MATCH cho Person nodes ===
+            # Tìm exact match TRƯỚC với score cao hơn
+            for term in search_terms:
+                exact_result = session.run("""
+                    MATCH (p:Person)
+                    WHERE toLower(p.name) = toLower($term)
+                       OR toLower(p.full_name) = toLower($term)
+                    RETURN p, 'exact' as match_type
+                    LIMIT 5
+                """, term=term)
+                
+                exact_count = 0
+                for r in exact_result:
+                    exact_count += 1
+                    node = r["p"]
+                    nid = node.element_id
+                    if nid not in [c.get("id") for c in candidates]:
+                        all_names = self._get_all_names_for_node(session, nid)
+                        candidates.append({
+                            "id": nid,
+                            "type": "Person",
+                            "name": node.get("name", ""),
+                            "properties": dict(node),
+                            "score": 3.0,  # EXACT match = score cao nhất
+                            "source": "exact_match",
+                            "all_names": all_names
+                        })
+                if exact_count > 0:
+                    print(f"  [Fulltext] EXACT match: found {exact_count} Person(s)")
+
+            # Thử fulltext index trước (chỉ khi không có exact match)
+            if not any(c.get("source") == "exact_match" for c in candidates):
+                try:
+                    ft_query = f"{entity}~"
+                    result = session.run("""
+                        CALL db.index.fulltext.queryNodes("entityIndex", $search_query)
+                        YIELD node, score
+                        RETURN node, score
+                        ORDER BY score DESC
+                        LIMIT 10
+                    """, search_query=ft_query)
+                    
+                    ft_count = 0
+                    for r in result:
+                        ft_count += 1
+                        node = r["node"]
+                        nid = node.element_id
+                        if nid not in [c.get("id") for c in candidates]:
+                            candidates.append({
+                                "id": nid,
+                                "type": list(node.labels)[0] if node.labels else "Unknown",
+                                "name": node.get("name", ""),
+                                "properties": dict(node),
+                                "score": r["score"] * 1.5,  # Boost fulltext score
+                                "source": "fulltext",
+                                "all_names": self._get_all_names_for_node(session, nid)
+                            })
+                    if ft_count > 0:
+                        print(f"  [Fulltext] Index found: {ft_count} results")
+                except Exception as e:
+                    print(f"  [Fulltext] Index error: {e}")
+
+            # CONTAINS search (fallback)
             for term in search_terms:
                 result = session.run("""
                     MATCH (n)
@@ -679,7 +847,7 @@ class QueryPipeline:
                        OR toLower(n.other_name) CONTAINS toLower($term)
                        OR toLower(n.alias) CONTAINS toLower($term)
                     RETURN n, labels(n)[0] as type
-                    LIMIT 5
+                    LIMIT 10
                 """, term=term)
                 
                 for r in result:
@@ -688,19 +856,23 @@ class QueryPipeline:
                     ntype = r["type"]
                     
                     if nid not in [c.get("id") for c in candidates]:
+                        # Ưu tiên Person nodes với score cao hơn
+                        base_score = 1.0
+                        if ntype == "Person":
+                            base_score = 1.5
+                        
                         all_names = self._get_all_names_for_node(session, nid)
                         candidates.append({
                             "id": nid,
                             "type": ntype,
                             "name": n.get("name", "") or n.get("value", ""),
                             "properties": dict(n),
-                            "score": 1.0,
+                            "score": base_score,
                             "source": "fulltext_fallback",
                             "all_names": all_names
                         })
 
-            return candidates
-
+            print(f"  [Fulltext] Total candidates: {len(candidates)}")
             return candidates
 
     def _get_all_names_for_node(self, session, node_eid: str) -> List[Dict]:
@@ -771,6 +943,7 @@ class QueryPipeline:
         """
         model = self._get_semantic_model()
         if not model:
+            print("  [Vector] Model not available (sentence-transformers not installed)")
             return []
 
         try:
@@ -810,12 +983,15 @@ class QueryPipeline:
                         # Index có thể chưa tồn tại, bỏ qua
                         pass
                 
+                if candidates:
+                    print(f"  [Vector] Found {len(candidates)} results")
+                
                 # Sort theo score
                 candidates.sort(key=lambda x: x["score"], reverse=True)
                 return candidates[:10]
                 
         except Exception as e:
-            print(f"❌ Vector search error: {e}")
+            print(f"  [Vector] Error: {e}")
             return []
 
     # =========================================================================
@@ -824,40 +1000,36 @@ class QueryPipeline:
 
     def _expand_graph(self, candidates: List[Dict]) -> List[Dict]:
         """
-        Expand graph từ candidates - LẤY TẤT CẢ related nodes.
+        Expand graph từ candidates - GIỚI HẠN tổng số nodes để tránh noise.
         
-        Ví dụ:
-        - Event → lấy Person (người tham gia, chỉ huy, nạn nhân)
-        - Person → lấy Events, Names, Dynasties
-        - Dynasty → lấy Persons thuộc triều đình
-        - Query "Ai làm XYZ?" → Event → Person
+        FIX: Giới hạn total nodes = 50
         """
         if not candidates:
             return []
 
+        MAX_TOTAL_NODES = 50
+
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             expanded = {}
             
-            # === Phase 1: Thu thập TẤT CẢ elementIds từ candidates ===
-            all_ids = {}  # elementId -> {type, name, via_name}
+            # === Phase 1: Thu thập elementIds từ candidates ===
+            all_ids = {}
             
             for c in candidates:
+                if len(expanded) >= MAX_TOTAL_NODES:
+                    break
                 cid = c["id"]
-                ctype = c["type"]
-                cname = c.get("name", "")
-                via_name = c.get("via_name", "")
-                
                 all_ids[cid] = {
-                    "type": ctype,
-                    "name": cname,
-                    "via_name": via_name
+                    "type": c["type"],
+                    "name": c.get("name", ""),
+                    "via_name": c.get("via_name", "")
                 }
             
-            # === Phase 2: EXPAND NEIGHBORHOOD (2-hop) - Lấy tất cả related nodes ===
+            # === Phase 2: EXPAND NEIGHBORHOOD (2-hop) ===
             for cid, cinfo in all_ids.items():
-                ctype = cinfo["type"]
-                
-                # Query lấy neighborhood 2-hop
+                if len(expanded) >= MAX_TOTAL_NODES:
+                    break
+                    
                 neighborhood_result = session.run("""
                     MATCH path = (center)-[*1..2]-(neighbor)
                     WHERE elementId(center) = $cid
@@ -867,38 +1039,29 @@ class QueryPipeline:
                 """, cid=cid)
                 
                 for nr in neighborhood_result:
+                    if len(expanded) >= MAX_TOTAL_NODES:
+                        break
+                        
                     neighbor = nr["neighbor"]
                     rels = nr["rels"]
                     
                     nid = neighbor.element_id
                     ntype = list(neighbor.labels)[0] if neighbor.labels else "Unknown"
                     nname = neighbor.get("name", "") or neighbor.get("value", "")
-                    
-                    # Xác định relationship type
                     rel_type = type(rels[0]).__name__ if rels else ""
                     
-                    # Ưu tiên Person nodes
                     if ntype == "Person" and nid not in expanded:
                         expanded[nid] = self._get_person_context(session, nid)
                     elif ntype == "Event" and nid not in expanded:
-                        # Xử lý Event nodes - lấy properties và related
                         node_props = dict(neighbor)
                         expanded[nid] = {
-                            "id": nid,
-                            "type": ntype,
-                            "name": nname,
-                            "rel": rel_type,
-                            "all_names": [],
-                            "related": [],
-                            "properties": node_props
+                            "id": nid, "type": ntype, "name": nname, "rel": rel_type,
+                            "all_names": [], "related": [], "properties": node_props
                         }
-                        # Lấy related nodes của Event
                         event_related = session.run("""
                             MATCH (e)-[r]->(related)
                             WHERE elementId(e) = $eid
-                            RETURN related.name as rel_name, 
-                                   labels(related)[0] as rel_type,
-                                   type(r) as relationship
+                            RETURN related.name as rel_name, labels(related)[0] as rel_type, type(r) as relationship
                             LIMIT 20
                         """, eid=nid)
                         for er in event_related:
@@ -910,20 +1073,15 @@ class QueryPipeline:
                                     "rel": er.get("relationship", "")
                                 })
                     elif nid not in expanded:
-                        # Lấy TẤT CẢ properties của neighbor node
-                        node_props = dict(neighbor)
                         expanded[nid] = {
-                            "id": nid,
-                            "type": ntype,
-                            "name": nname,
-                            "rel": rel_type,
-                            "all_names": [],
-                            "related": [],
-                            "properties": node_props
+                            "id": nid, "type": ntype, "name": nname, "rel": rel_type,
+                            "all_names": [], "related": [], "properties": dict(neighbor)
                         }
             
-            # === Phase 3: Ensure Person context (nếu có Event nhưng chưa có Person) ===
+            # === Phase 3: Ensure Person context cho Event ===
             for cid, cinfo in all_ids.items():
+                if len(expanded) >= MAX_TOTAL_NODES:
+                    break
                 if cinfo["type"] == "Event":
                     person_result = session.run("""
                         MATCH (e)-[r]-(p:Person)
@@ -931,13 +1089,16 @@ class QueryPipeline:
                         RETURN DISTINCT elementId(p) as pid
                         LIMIT 10
                     """, eid=cid)
-                    
                     for pr in person_result:
+                        if len(expanded) >= MAX_TOTAL_NODES:
+                            break
                         pid = pr["pid"]
                         if pid not in expanded:
                             expanded[pid] = self._get_person_context(session, pid)
             
-            return list(expanded.values())
+            result = list(expanded.values())
+            print(f"  [Expand] Total: {len(result)} nodes")
+            return result
     
     def _get_person_context(self, session, person_eid: str) -> Dict:
         """Lấy full context cho một Person node."""
@@ -946,7 +1107,10 @@ class QueryPipeline:
             WHERE elementId(p) = $peid
             RETURN p.name as name, p.full_name as full_name, p.other_name as other_name,
                    p.birth_name as birth_name, p.alias as alias,
-                   p.description as description, p.role as role, p.title as title
+                   p.description as description, p.role as role, p.title as title,
+                   p.birth_date as birth_date, p.death_date as death_date,
+                   p.birth_year as birth_year, p.death_year as death_year,
+                   p.reign_start as reign_start, p.reign_end as reign_end
         """, peid=person_eid)
         
         context = {
@@ -961,6 +1125,12 @@ class QueryPipeline:
             "description": "",
             "role": "",
             "title": "",
+            "birth_date": "",
+            "death_date": "",
+            "birth_year": "",
+            "death_year": "",
+            "reign_start": "",
+            "reign_end": "",
             "all_names": [],
             "related": []
         }
@@ -975,6 +1145,12 @@ class QueryPipeline:
             context["description"] = pr.get("description", "") or ""
             context["role"] = pr.get("role", "") or ""
             context["title"] = pr.get("title", "") or ""
+            context["birth_date"] = pr.get("birth_date", "") or ""
+            context["death_date"] = pr.get("death_date", "") or ""
+            context["birth_year"] = pr.get("birth_year", "") or ""
+            context["death_year"] = pr.get("death_year", "") or ""
+            context["reign_start"] = pr.get("reign_start", "") or ""
+            context["reign_end"] = pr.get("reign_end", "") or ""
             break
         
         # Lấy TẤT CẢ Name nodes
@@ -1021,50 +1197,85 @@ class QueryPipeline:
     def _filter_context(self, query_info: Dict, candidates: List[Dict]) -> str:
         """
         LLM filter context - CHỈ chọn thông tin liên quan từ candidates.
+        
+        FIX: Cải thiện prompt để LLM hiểu rõ hơn về context.
         """
         if not candidates:
             return ""
 
+        entity = query_info.get("entity", "")
+        intent = query_info.get("intent", "")
+        
+        # === FIX: Kiểm tra xem entity có trong candidates không ===
+        entity_in_candidates = False
+        for c in candidates:
+            cname = c.get("name", "").lower()
+            all_names = c.get("all_names", [])
+            if (cname and entity.lower() in cname) or any(entity.lower() in n.get("value", "").lower() for n in all_names):
+                entity_in_candidates = True
+                break
+        
+        if not entity_in_candidates:
+            print(f"  [WARNING] Entity '{entity}' NOT found in candidates!")
+            # Vẫn tiếp tục để xem có thông tin nào liên quan không
+        
         # Format candidates thành text
         context_text = self._format_candidates(candidates)
         
         # DEBUG: Print context trước khi gửi cho LLM
-        print(f"\n  [DEBUG] Context preview (first 500 chars):")
-        print(f"  {context_text[:500] if context_text else 'EMPTY'}")
-        print(f"  [DEBUG] Total candidates: {len(candidates)}")
-        print(f"  [DEBUG] Candidate types: {[c.get('type') for c in candidates]}")
+        print(f"\n  [DEBUG] === CONTEXT FILTERING DEBUG ===")
+        print(f"  Entity: {entity}")
+        print(f"  Intent: {intent}")
+        print(f"  Total candidates: {len(candidates)}")
+        print(f"  Candidate types: {[c.get('type') for c in candidates[:10]]}")
+        
+        # Show first 3 candidates
+        print(f"  First 3 candidates:")
+        for i, c in enumerate(candidates[:3]):
+            print(f"    [{i+1}] [{c.get('type')}] {c.get('name')} (score: {c.get('score', 0):.2f})")
+        
+        # Check if entity is in candidates
+        print(f"  Entity '{entity}' in candidates: {'YES' if entity_in_candidates else 'NO'}")
+        print(f"  [DEBUG] Context preview (first 300 chars):")
+        print(f"  {context_text[:300] if context_text else 'EMPTY'}")
 
+        # === FIX: Cải thiện prompt ===
         prompt = f"""Bạn là trợ lý RAG - CHỌN thông tin liên quan từ context.
 
 CÂU HỎI: {query_info['original_question']}
-ENTITY: {query_info['entity']}
-INTENT: {query_info['intent']}
-KEYWORDS: {query_info['keywords']}
+ENTITY CẦN TÌM: "{entity}"
+INTENT: {intent}
 
 CONTEXT (từ database - BAO GỒM TẤT CẢ properties):
 {context_text}
 
 NHIỆM VỤ:
-1. Đọc câu hỏi: "{query_info['original_question']}"
-2. Tìm thông tin LIÊN QUAN:
-   - Nếu hỏi "Bảo Đại đăng quang năm nào?" → Tìm Event "Đăng quang" của Bảo Đại, lấy property "date"
-   - Nếu hỏi "tên thật/birth_name" → Tìm Name nodes có name_type = "birth_name"
-   - Nếu hỏi "X là ai?" → Lấy thông tin cơ bản về X
-3. Trả về THÔNG TIN ĐẦY ĐỦ (bao gồm cả date nếu có)
+1. Tìm thông tin về "{entity}" trong context
+2. Nếu câu hỏi hỏi về "sinh năm/ngày sinh" → Tìm birth_date, birth_year
+3. Nếu câu hỏi hỏi về "mất năm/ngày mất" → Tìm death_date, death_year
+4. Nếu câu hỏi hỏi về "tên thật/birth_name" → Tìm Name nodes có name_type = "birth_name"
+5. Nếu câu hỏi hỏi về "lên ngôi/đăng quang" → Tìm reign_start_date, reign_year
+6. Nếu câu hỏi "X là ai?" → Lấy thông tin cơ bản về X
 
-QUY TẮC:
-- Tìm THẤY thì TRẢ VỀ thông tin (đừng bỏ qua vì nghĩ "không liên quan")
-- Nhìn vào properties: date, name, description... đều là thông tin hợp lệ
+QUY TẮC QUAN TRỌNG:
+- Tìm THẤY thì TRẢ VỀ thông tin (KHÔNG bỏ qua vì nghĩ "không liên quan")
+- Xem tất cả properties: name, birth_date, death_date, reign_start, description...
+- Xem tất cả related nodes (đây có thể chứa thông tin quan trọng)
+- Nếu có Event "Đăng quang" của {entity}, lấy date của event đó
 - Nếu KHÔNG TÌM THẤY → nói "KHÔNG ĐỦ DỮ LIỆU"
 - KHÔNG suy đoán hay bịa đặt
 
-Trả về thông tin tìm được, hoặc "KHÔNG ĐỦ DỮ LIỆU"."""
+Trả về:
+1. Thông tin tìm được (nếu có)
+2. Hoặc "KHÔNG ĐỦ DỮ LIỆU" (nếu không tìm thấy)"""
 
+        # === FIX: Dùng flash model cho filter (nhanh hơn) ===
         try:
-            response = call_llm(prompt, model=self.model, temperature=0.1)
+            response = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=0.1)
             
             # Kiểm tra nếu LLM nói không đủ dữ liệu
             if "KHÔNG ĐỦ DỮ LIỆU" in response.upper():
+                print(f"  [WARNING] LLM returned: KHÔNG ĐỦ DỮ LIỆU")
                 return ""
             
             return response.strip()
@@ -1073,10 +1284,7 @@ Trả về thông tin tìm được, hoặc "KHÔNG ĐỦ DỮ LIỆU"."""
             return context_text  # Fallback: return unfiltered
 
     def _format_candidates(self, candidates: List[Dict]) -> str:
-        """
-        Format candidates thành text readable - BAO GỒM TẤT CẢ properties.
-        VD: Event "Đăng quang" với date: "08-01-1926" phải được hiển thị.
-        """
+        """Format candidates thành text readable."""
         lines = []
         
         for c in candidates:
@@ -1085,36 +1293,33 @@ Trả về thông tin tìm được, hoặc "KHÔNG ĐỦ DỮ LIỆU"."""
             
             line = f"\n[{node_type}] {name}"
             
-            # === Tất cả Name nodes - QUAN TRỌNG NHẤT ===
+            # Birth/Death/Reign info
+            for key in ["birth_date", "birth_year", "death_date", "death_year", "reign_start", "reign_end"]:
+                val = c.get(key, "") or c.get("properties", {}).get(key, "")
+                if val:
+                    line += f"\n  {key}: {val}"
+            
+            # All Names
             all_names = c.get("all_names", [])
             if all_names:
                 line += "\n  All Names:"
                 for an in all_names:
-                    name_val = an.get('value', '')
-                    name_type = an.get('type', '')
-                    rel = an.get('rel', '')
-                    if name_val:
-                        line += f"\n    - {name_val} [{name_type}]"
+                    if an.get('value'):
+                        line += f"\n    - {an['value']} [{an.get('type', '')}]"
             
-            # === TẤT CẢ Properties (không giới hạn) ===
+            # Properties
             all_props = c.get("properties", {})
             if all_props:
                 line += "\n  Properties:"
                 for prop, val in all_props.items():
-                    if val:  # Chỉ hiển thị properties có giá trị
+                    if val and prop not in ["birth_date", "birth_year", "death_date", "death_year"]:
                         line += f"\n    - {prop}: {val}"
             
-            # === Properties trực tiếp (nếu không có trong properties dict) ===
-            direct_props = ["full_name", "birth_name", "title", "role", "description", "name", "date"]
-            for prop in direct_props:
-                if prop not in (all_props or {}) and c.get(prop):
-                    line += f"\n    - {prop}: {c.get(prop)}"
-            
-            # === Related nodes (giới hạn) ===
+            # Related
             related = c.get("related", [])
             if related:
                 line += "\n  Related:"
-                for r in related[:5]:  # Giới hạn 5
+                for r in related[:8]:
                     line += f"\n    - {r.get('name', 'N/A')} ({r.get('type', '')}) [{r.get('rel', '')}]"
             
             lines.append(line)
