@@ -18,14 +18,17 @@ from pipeline.custom_graph_extractor import CustomGraphExtractor
 from graph.storage import GraphDB
 
 from api.schemas import QueryRequest, QueryResponse
+from pipeline.pg_to_neo4j import PostgresToNeo4jMigrator
+from pydantic import Field
+from typing import Optional, Dict, Any
 from pipeline.query_pipeline import ask_agent
 
 load_dotenv()
 
 app = FastAPI(
     title="Ingestion API - Vietnamese Historical Figures",
-    version="2.0.0",
-    description="Upload files and extract person profiles with target_person filtering"
+    version="2.1.0",
+    description="Upload files and extract person profiles with target_person filtering + new endpoints"
 )
 
 # Store ingestion jobs status (thread-safe)
@@ -46,6 +49,11 @@ class JobResult(BaseModel):
     error: Optional[str] = None
     created_at: str
     completed_at: Optional[str] = None
+    source_type: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    pg_dsn: Optional[str] = None
+    table_name: Optional[str] = None
+    limit: Optional[int] = None
 
 
 class UploadResponse(BaseModel):
@@ -361,6 +369,99 @@ async def upload_file(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+class IngestNewRequest(BaseModel):
+    """Request for /ingest_new - extended ingestion config"""
+    text: str
+    source_type: str = Field("text", description="wiki|doc|custom")
+    target_person: Optional[str] = None
+    config: Optional[Dict[str, Any]] = {}
+
+
+@app.post("/ingest_new", response_model=JobResult)
+async def ingest_new(request: IngestNewRequest, background_tasks: BackgroundTasks):
+    """
+    New ingestion endpoint - text-based with extra config
+    
+    Extended version of /upload for programmatic use.
+    """
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        ingestion_jobs[job_id] = {
+            "job_id": job_id,
+            "filename": f"{request.source_type}.txt",
+            "target_person": request.target_person or "unknown",
+            "status": "queued",
+            "nodes_created": 0,
+            "relationships_created": 0,
+            "error": None,
+            "created_at": datetime.now().isoformat(),
+            "completed_at": None,
+            "profile": None,
+            "source_type": request.source_type,
+            "config": request.config,
+            "message": "Queued for new ingestion pipeline"
+        }
+    
+    # Reuse same background task (process_ingestion accepts file_type="text")
+    background_tasks.add_task(
+        process_ingestion,
+        job_id,
+        request.text,
+        request.target_person or "unknown",
+        "text",
+        f"{request.source_type}.txt"
+    )
+    
+    # Return immediate queued response
+    with jobs_lock:
+        queued_job = dict(ingestion_jobs[job_id])
+    return JobResult(**queued_job)
+
+
+class MigrateNewRequest(BaseModel):
+    """Request for /migrate_new"""
+    pg_dsn: str
+    table_name: str = "persons"
+    limit: Optional[int] = None
+
+
+@app.post("/migrate_new", response_model=JobResult)
+async def migrate_new(request: MigrateNewRequest, background_tasks: BackgroundTasks):
+    """
+    New migration endpoint - Postgres → Neo4j as background job
+    """
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        ingestion_jobs[job_id] = {
+            "job_id": job_id,
+            "filename": "migration",
+            "target_person": f"migrate_{request.table_name}",
+            "status": "queued",
+            "nodes_created": 0,
+            "relationships_created": 0,
+            "error": None,
+            "created_at": datetime.now().isoformat(),
+            "completed_at": None,
+            "profile": None,
+            "pg_dsn": request.pg_dsn,
+            "table_name": request.table_name,
+            "limit": request.limit,
+            "message": "Queued for Postgres migration"
+        }
+    
+    background_tasks.add_task(
+        process_migration_new,
+        job_id,
+        request.pg_dsn,
+        request.table_name,
+        request.limit
+    )
+    
+    with jobs_lock:
+        queued_job = dict(ingestion_jobs[job_id])
+    return JobResult(**queued_job)
 
 
 @app.get("/status/{job_id}", response_model=JobResult)
