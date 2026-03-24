@@ -17,6 +17,9 @@ from threading import Lock
 from pipeline.custom_graph_extractor import CustomGraphExtractor
 from graph.storage import GraphDB
 
+from api.schemas import QueryRequest, QueryResponse
+from pipeline.query_pipeline import ask_agent
+
 load_dotenv()
 
 app = FastAPI(
@@ -574,6 +577,12 @@ async def debug_extract(
             "traceback": error_msg
         }
 
+
+@app.post("/chat", response_model=QueryResponse)
+async def chat(request: QueryRequest):
+    """Chat endpoint for Graph RAG queries."""
+    answer = ask_agent(request.question)
+    return QueryResponse(answer=answer)
 
 if __name__ == "__main__":
     import uvicorn
