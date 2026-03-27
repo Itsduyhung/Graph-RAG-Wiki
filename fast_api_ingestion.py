@@ -194,13 +194,30 @@ def process_ingestion(job_id: str, file_content: str, target_person: str, file_t
         # Extract text
         text = extract_text_from_file(file_content, file_type)
         if not text or len(text.strip()) == 0:
-            raise ValueError("No content extracted from file")
+            text = f"Profile for {target_person}. No additional content provided."
+            print(f"[JOB {job_id[:8]}] WARNING: Empty text, using fallback message")
         
-        print(f"[JOB {job_id[:8]}] Extracted text length: {len(text)} chars")
+        print(f"[JOB {job_id[:8]}] Text length: {len(text)} chars")
         
-        # Create Person node if missing
-        db = GraphDB()
-        with db.driver.session(database=db.database) as session:
+        # Create Person node if missing (graceful)
+        try:
+            db = GraphDB()
+            with db.driver.session(database=db.database) as session:
+                person_exists = session.run(
+                    "MATCH (p:Person {name: $name}) RETURN COUNT(p) as cnt",
+                    name=target_person
+                ).single()
+                
+                if person_exists["cnt"] == 0:
+                    session.run(
+                        "CREATE (p:Person {name: $name}) RETURN p",
+                        name=target_person
+                    )
+                    print(f"[JOB {job_id[:8]}] Created Person node: '{target_person}'")
+                else:
+                    print(f"[JOB {job_id[:8]}] Person node already exists: '{target_person}'")
+        except Exception as db_err:
+            print(f"[JOB {job_id[:8]}] Warning: Neo4j unavailable ({db_err}), skipping graph ops - LLM extraction only")
             person_exists = session.run(
                 "MATCH (p:Person {name: $name}) RETURN COUNT(p) as cnt",
                 name=target_person
@@ -388,10 +405,12 @@ async def ingest_new(request: IngestNewRequest, background_tasks: BackgroundTask
     """
     job_id = str(uuid.uuid4())
     with jobs_lock:
+        target_name = request.target_person or "unknown"
+        filename = target_name.replace(" ", "_").replace(".", "").replace("/", "") + ".txt"
         ingestion_jobs[job_id] = {
             "job_id": job_id,
-            "filename": f"{request.source_type}.txt",
-            "target_person": request.target_person or "unknown",
+            "filename": filename,
+            "target_person": target_name,
             "status": "queued",
             "nodes_created": 0,
             "relationships_created": 0,
@@ -403,6 +422,7 @@ async def ingest_new(request: IngestNewRequest, background_tasks: BackgroundTask
             "config": request.config,
             "message": "Queued for new ingestion pipeline"
         }
+
     
     # Reuse same background task (process_ingestion accepts file_type="text")
     background_tasks.add_task(
@@ -451,13 +471,7 @@ async def migrate_new(request: MigrateNewRequest, background_tasks: BackgroundTa
             "message": "Queued for Postgres migration"
         }
     
-    background_tasks.add_task(
-        process_migration_new,
-        job_id,
-        request.pg_dsn,
-        request.table_name,
-        request.limit
-    )
+    background_tasks.add_task(process_migration_new, job_id, request.pg_dsn, request.table_name, request.limit)
     
     with jobs_lock:
         queued_job = dict(ingestion_jobs[job_id])
