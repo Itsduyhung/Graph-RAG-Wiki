@@ -1061,7 +1061,7 @@ QUY TẮC:
 Trả về thông tin tìm được, hoặc "KHÔNG ĐỦ DỮ LIỆU"."""
 
         try:
-            response = call_llm(prompt, model='gemini-2.0-flash', temperature=0.1)
+            response = call_llm(prompt, model='gemini-2.5-flash-lite', temperature=0.1)
             
             # Kiểm tra nếu LLM nói không đủ dữ liệu
             if "KHÔNG ĐỦ DỮ LIỆU" in response.upper():
