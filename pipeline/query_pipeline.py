@@ -1003,22 +1003,44 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         Expand graph từ candidates - GIỚI HẠN tổng số nodes để tránh noise.
         
         FIX: Giới hạn total nodes = 50
+        FIX: Ưu tiên entity chính vào expanded TRƯỚC để đảm bảo không bị mất
         """
         if not candidates:
             return []
 
         MAX_TOTAL_NODES = 50
+        RESERVE_FOR_MAIN = 10  # Số nodes reserved cho main entity
 
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             expanded = {}
             
-            # === Phase 1: Thu thập elementIds từ candidates ===
+            # === FIX: Tìm và ƯU TIÊN thêm main entity vào expanded ĐẦU TIÊN ===
+            main_entity_id = None
+            for c in candidates:
+                # Entity chính thường có score >= 2.0 (exact match)
+                if c.get("score", 0) >= 2.0 and c.get("type") == "Person":
+                    main_entity_id = c["id"]
+                    break
+            
+            # Nếu không có candidate nào score cao, lấy candidate đầu tiên
+            if not main_entity_id and candidates:
+                main_entity_id = candidates[0]["id"]
+            
+            # Thêm main entity vào expanded TRƯỚC TIÊN
+            if main_entity_id:
+                main_context = self._get_person_context(session, main_entity_id)
+                expanded[main_entity_id] = main_context
+                print(f"  [Expand] Main entity added first: {main_context.get('name', 'unknown')}")
+            
+            # === Phase 1: Thu thập elementIds từ candidates (bỏ qua main_entity đã thêm) ===
             all_ids = {}
             
             for c in candidates:
-                if len(expanded) >= MAX_TOTAL_NODES:
-                    break
                 cid = c["id"]
+                if cid == main_entity_id:
+                    continue  # Đã thêm rồi, bỏ qua
+                if len(all_ids) >= MAX_TOTAL_NODES - RESERVE_FOR_MAIN:
+                    break
                 all_ids[cid] = {
                     "type": c["type"],
                     "name": c.get("name", ""),
@@ -1026,8 +1048,11 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 }
             
             # === Phase 2: EXPAND NEIGHBORHOOD (2-hop) ===
+            # Giới hạn số neighbors cho mỗi candidate để tránh lấp đầy 50 nodes quá nhanh
+            NEIGHBORS_PER_CANDIDATE = 5  # Giảm từ 50 xuống 5
+            
             for cid, cinfo in all_ids.items():
-                if len(expanded) >= MAX_TOTAL_NODES:
+                if len(expanded) >= MAX_TOTAL_NODES - RESERVE_FOR_MAIN:
                     break
                     
                 neighborhood_result = session.run("""
@@ -1035,11 +1060,11 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     WHERE elementId(center) = $cid
                     AND NOT elementId(neighbor) = $cid
                     RETURN neighbor, relationships(path) as rels
-                    LIMIT 50
-                """, cid=cid)
+                    LIMIT $limit
+                """, cid=cid, limit=NEIGHBORS_PER_CANDIDATE)
                 
                 for nr in neighborhood_result:
-                    if len(expanded) >= MAX_TOTAL_NODES:
+                    if len(expanded) >= MAX_TOTAL_NODES - RESERVE_FOR_MAIN:
                         break
                         
                     neighbor = nr["neighbor"]
@@ -1048,18 +1073,32 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     nid = neighbor.element_id
                     ntype = list(neighbor.labels)[0] if neighbor.labels else "Unknown"
                     nname = neighbor.get("name", "") or neighbor.get("value", "")
-                    rel_type = type(rels[0]).__name__ if rels else ""
+                    
+                    # Lấy relationship info
+                    if rels:
+                        rel = rels[0]
+                        rel_type = type(rel).__name__
+                        # Kiểm tra chiều: startNode có phải là center không
+                        try:
+                            is_outgoing = rel.start_node.element_id == cid
+                        except:
+                            is_outgoing = True
+                    else:
+                        rel_type = ""
+                        is_outgoing = True
                     
                     if ntype == "Person" and nid not in expanded:
                         expanded[nid] = self._get_person_context(session, nid)
                     elif ntype == "Event" and nid not in expanded:
                         node_props = dict(neighbor)
                         expanded[nid] = {
-                            "id": nid, "type": ntype, "name": nname, "rel": rel_type,
+                            "id": nid, "type": ntype, "name": nname, 
+                            "rel_type": rel_type, "is_outgoing": is_outgoing,
                             "all_names": [], "related": [], "properties": node_props
                         }
+                        # Event related - bidirectional
                         event_related = session.run("""
-                            MATCH (e)-[r]->(related)
+                            MATCH (e)-[r]-(related)
                             WHERE elementId(e) = $eid
                             RETURN related.name as rel_name, labels(related)[0] as rel_type, type(r) as relationship
                             LIMIT 20
@@ -1074,23 +1113,24 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                                 })
                     elif nid not in expanded:
                         expanded[nid] = {
-                            "id": nid, "type": ntype, "name": nname, "rel": rel_type,
+                            "id": nid, "type": ntype, "name": nname,
+                            "rel_type": rel_type, "is_outgoing": is_outgoing,
                             "all_names": [], "related": [], "properties": dict(neighbor)
                         }
             
             # === Phase 3: Ensure Person context cho Event ===
             for cid, cinfo in all_ids.items():
-                if len(expanded) >= MAX_TOTAL_NODES:
+                if len(expanded) >= MAX_TOTAL_NODES - RESERVE_FOR_MAIN:
                     break
                 if cinfo["type"] == "Event":
                     person_result = session.run("""
                         MATCH (e)-[r]-(p:Person)
                         WHERE elementId(e) = $eid
                         RETURN DISTINCT elementId(p) as pid
-                        LIMIT 10
+                        LIMIT 5
                     """, eid=cid)
                     for pr in person_result:
-                        if len(expanded) >= MAX_TOTAL_NODES:
+                        if len(expanded) >= MAX_TOTAL_NODES - RESERVE_FOR_MAIN:
                             break
                         pid = pr["pid"]
                         if pid not in expanded:
@@ -1169,26 +1209,159 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     "rel": nr.get("rel_type", "")
                 })
         
-        # Lấy related nodes (events, dynasties, positions...)
+        # Lấy related nodes - ĐỌC ĐÚNG CHIỀU RELATIONSHIP
+        # CHILD_OF: (child)-[:CHILD_OF]->(parent) → "child là con của parent"
+        # Mẹ của: (child)-[:CHILD_OF]->(parent) → "parent là mẹ của child"
+        # FIX: Lấy THÊM properties của related node (đặc biệt Event có year, month, etc.)
         related_result = session.run("""
-            MATCH (p:Person)-[r]->(related)
+            MATCH (p:Person)-[r]-(related)
             WHERE elementId(p) = $peid
+            AND NOT related:Person
             RETURN related.name as rel_name, 
                    labels(related)[0] as rel_type,
-                   type(r) as relationship
+                   type(r) as relationship,
+                   startNode(r).name = p.name as is_outgoing,
+                   related.year as rel_year,
+                   related.month as rel_month,
+                   related.age as rel_age,
+                   related.description as rel_description,
+                   related.date as rel_date
             LIMIT 30
         """, peid=person_eid)
         
         for rr in related_result:
             rln = rr.get("rel_name", "")
+            rel_type = rr.get("relationship", "")
+            is_outgoing = rr.get("is_outgoing", True)
+            
             if rln:
+                # Format relationship text theo đúng chiều
+                rel_text = self._format_relationship(rel_type, is_outgoing, rln)
+                
+                # FIX: Thêm thông tin chi tiết cho Event nodes
+                rel_detail = ""
+                rel_year = rr.get("rel_year")
+                rel_month = rr.get("rel_month")
+                rel_age = rr.get("rel_age")
+                rel_desc = rr.get("rel_description")
+                rel_date = rr.get("rel_date")
+                
+                if rel_year or rel_month or rel_age or rel_date:
+                    parts = []
+                    if rel_date:
+                        parts.append(f"ngày: {rel_date}")
+                    if rel_month:
+                        parts.append(f"tháng: {rel_month}")
+                    if rel_year:
+                        parts.append(f"năm: {rel_year}")
+                    if rel_age:
+                        parts.append(f"tuổi: {rel_age}")
+                    rel_detail = f" [{', '.join(parts)}]"
+                
+                # FIX: Lấy THÊM thông tin về những người liên quan đến Event này
+                # Ví dụ: Event "Thoái vị" có Trần Huy Liệu nhận ấn kiếm
+                related_persons = ""
+                if rr.get("rel_type") == "Event" or rel_type in ["PERFORMED", "PARTICIPATED_IN", "SIGNED"]:
+                    try:
+                        # Tìm Person liên quan đến Event này
+                        event_name = rln
+                        person_result = session.run("""
+                            MATCH (e)-[r]-(p:Person)
+                            WHERE e.name = $ename AND p.name <> $main_person
+                            RETURN p.name as person_name, type(r) as rel_type
+                            LIMIT 5
+                        """, ename=event_name, main_person=context.get("name", ""))
+                        
+                        person_list = []
+                        for pr in person_result:
+                            pn = pr.get("person_name", "")
+                            if pn and pn != context.get("name"):
+                                person_list.append(pn)
+                        
+                        if person_list:
+                            related_persons = f" - Người liên quan: {', '.join(person_list)}"
+                    except:
+                        pass
+                
                 context["related"].append({
                     "name": rln,
                     "type": rr.get("rel_type", ""),
-                    "rel": rr.get("relationship", "")
+                    "rel": rel_text,
+                    "year": rel_year or "",
+                    "month": rel_month or "",
+                    "age": rel_age or "",
+                    "date": rel_date or "",
+                    "description": rel_desc or "",
+                    "detail": rel_detail,  # Text format cho display
+                    "related_persons": related_persons  # Người liên quan đến Event
+                })
+        
+        # Lấy Person-related (family relationships)
+        family_result = session.run("""
+            MATCH (p:Person)-[r]-(related:Person)
+            WHERE elementId(p) = $peid
+            RETURN related.name as rel_name, 
+                   type(r) as relationship,
+                   startNode(r).name = p.name as is_outgoing
+            LIMIT 20
+        """, peid=person_eid)
+        
+        for rr in family_result:
+            rln = rr.get("rel_name", "")
+            rel_type = rr.get("relationship", "")
+            is_outgoing = rr.get("is_outgoing", True)
+            
+            if rln:
+                rel_text = self._format_relationship(rel_type, is_outgoing, rln)
+                context["related"].append({
+                    "name": rln,
+                    "type": "Person",
+                    "rel": rel_text
                 })
         
         return context
+    
+    def _format_relationship(self, rel_type: str, is_outgoing: bool, target_name: str) -> str:
+        """
+        Format relationship text theo đúng chiều.
+        
+        User's Neo4j convention:
+        - (Đồng Khánh)-[CHILD_OF]->(Nguyễn Thị Cẩm) 
+          → Đồng Khánh là CON CỦA Nguyễn Thị Cẩm
+        
+        is_outgoing=True: p-[rel]->target → target là parent của p
+        is_outgoing=False: p<-[rel]-target → target là parent của p
+        """
+        # CHILD_OF luôn đi từ child → parent
+        # Vậy cả 2 chiều đều có nghĩa: target là cha/mẹ của p
+        if rel_type.upper() == "CHILD_OF":
+            return f"{target_name} (là cha/mẹ của p)"
+        
+        if rel_type.upper() == "PARENT_OF":
+            if is_outgoing:
+                return f"{target_name} (là con của p)"
+            else:
+                return f"p (là cha/mẹ của {target_name})"
+        
+        if rel_type.upper() == "FATHER_OF":
+            if is_outgoing:
+                return f"{target_name} (là con của p)"
+            else:
+                return f"p (là cha của {target_name})"
+        
+        if rel_type.upper() == "MOTHER_OF":
+            if is_outgoing:
+                return f"{target_name} (là con của p)"
+            else:
+                return f"p (là mẹ của {target_name})"
+        
+        if rel_type.upper() == "SPOUSE_OF":
+            return f"{target_name} (là vợ/chồng của p)"
+        
+        if rel_type.upper() == "SIBLING_OF":
+            return f"{target_name} (là anh chị em của p)"
+        
+        return f"{target_name} ({rel_type})"
 
     # =========================================================================
     # 4. CONTEXT FILTERING (LLM - CHỈ filter, KHÔNG search)
@@ -1215,31 +1388,39 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 entity_in_candidates = True
                 break
         
-        if not entity_in_candidates:
-            print(f"  [WARNING] Entity '{entity}' NOT found in candidates!")
-            # Vẫn tiếp tục để xem có thông tin nào liên quan không
+        # === FIX: Tìm và hiển thị entity chính trong debug ===
+        main_entity_in_context = None
+        for c in candidates:
+            cname = c.get("name", "").lower()
+            all_names = c.get("all_names", [])
+            if (cname and entity.lower() in cname) or any(entity.lower() in n.get("value", "").lower() for n in all_names):
+                main_entity_in_context = c
+                break
         
-        # Format candidates thành text
-        context_text = self._format_candidates(candidates)
+        # Format candidates thành text - ƯU TIÊN main entity lên đầu
+        context_text = self._format_candidates(candidates, main_entity_name=entity)
         
         # DEBUG: Print context trước khi gửi cho LLM
         print(f"\n  [DEBUG] === CONTEXT FILTERING DEBUG ===")
         print(f"  Entity: {entity}")
         print(f"  Intent: {intent}")
         print(f"  Total candidates: {len(candidates)}")
-        print(f"  Candidate types: {[c.get('type') for c in candidates[:10]]}")
+        print(f"  Entity in candidates: {'YES' if entity_in_candidates else 'NO'}")
         
-        # Show first 3 candidates
-        print(f"  First 3 candidates:")
-        for i, c in enumerate(candidates[:3]):
-            print(f"    [{i+1}] [{c.get('type')}] {c.get('name')} (score: {c.get('score', 0):.2f})")
+        if main_entity_in_context:
+            print(f"  [MAIN ENTITY CONTEXT]:")
+            print(f"    Name: {main_entity_in_context.get('name')}")
+            print(f"    Type: {main_entity_in_context.get('type')}")
+            print(f"    Birth: {main_entity_in_context.get('birth_year', 'N/A')}")
+            print(f"    Death: {main_entity_in_context.get('death_year', 'N/A')}")
+            all_names = main_entity_in_context.get("all_names", [])
+            if all_names:
+                print(f"    Names: {[n.get('value') for n in all_names[:5]]}")
         
-        # Check if entity is in candidates
-        print(f"  Entity '{entity}' in candidates: {'YES' if entity_in_candidates else 'NO'}")
-        print(f"  [DEBUG] Context preview (first 300 chars):")
-        print(f"  {context_text[:300] if context_text else 'EMPTY'}")
+        print(f"  [DEBUG] Context preview (first 500 chars):")
+        print(f"  {context_text[:500] if context_text else 'EMPTY'}")
 
-        # === FIX: Cải thiện prompt ===
+        # === FIX: Cải thiện prompt - KHÔNG loại bỏ context quá mức ===
         prompt = f"""Bạn là trợ lý RAG - CHỌN thông tin liên quan từ context.
 
 CÂU HỎI: {query_info['original_question']}
@@ -1249,43 +1430,66 @@ INTENT: {intent}
 CONTEXT (từ database - BAO GỒM TẤT CẢ properties):
 {context_text}
 
+=== SỐ THỨ TỰ HOÀNG ĐẾ ===
+Nếu câu hỏi hỏi "thứ mấy" hoặc "thứ bao nhiêu":
+- Đọc SỐ LA MÃ: I=1, II=2, III=3, IV=4, V=5, VI=6, VII=7, VIII=8, IX=9, X=10, XI=11, XII=12, XIII=13, XIV=14, XV=15
+- Đọc SỐ Ả RẬP: 1=1, 2=2, 3=3, 4=4, 5=5, 6=6, 7=7, 8=8, 9=9, 10=10, 11=11, 12=12, 13=13, 14=14, 15=15
+- Đọc CHỮ: một/một=1, hai=2, ba=3, bốn=4, năm=5, sáu=6, bảy=7, tám=8, chín=9, mười=10, mười một=11, mười hai=12, mười ba=13
+
 NHIỆM VỤ:
 1. Tìm thông tin về "{entity}" trong context
-2. Nếu câu hỏi hỏi về "sinh năm/ngày sinh" → Tìm birth_date, birth_year
-3. Nếu câu hỏi hỏi về "mất năm/ngày mất" → Tìm death_date, death_year
-4. Nếu câu hỏi hỏi về "tên thật/birth_name" → Tìm Name nodes có name_type = "birth_name"
-5. Nếu câu hỏi hỏi về "lên ngôi/đăng quang" → Tìm reign_start_date, reign_year
-6. Nếu câu hỏi "X là ai?" → Lấy thông tin cơ bản về X
+2. ĐẶC BIỆT QUAN TRỌNG - TÌM NGÀY/THÁNG/NĂM trong Related nodes:
+   - "Sinh", "Mất", "Đăng quang", "Thoái vị" có thể có properties: year, month, date, age
+   - Ví dụ: "Mất" có thể có year="1997", month="Tháng 7", age="84"
+3. Nếu câu hỏi hỏi "sinh năm/ngày sinh" → Tìm birth_date, birth_year HOẶC related "Sinh" có year
+4. Nếu câu hỏi hỏi "mất năm/ngày mất" → Tìm death_date, death_year HOẶC related "Mất" có year
+5. Nếu câu hỏi hỏi "tên thật/birth_name" → Tìm Name nodes có name_type = "birth_name"
+6. Nếu câu hỏi hỏi "lên ngôi/đăng quang" → Tìm reign_start_date, reign_year HOẶC related "Đăng quang" có year
+7. Nếu câu hỏi "X là ai?" → Lấy thông tin cơ bản về X
 
 QUY TẮC QUAN TRỌNG:
-- Tìm THẤY thì TRẢ VỀ thông tin (KHÔNG bỏ qua vì nghĩ "không liên quan")
-- Xem tất cả properties: name, birth_date, death_date, reign_start, description...
-- Xem tất cả related nodes (đây có thể chứa thông tin quan trọng)
-- Nếu có Event "Đăng quang" của {entity}, lấy date của event đó
-- Nếu KHÔNG TÌM THẤY → nói "KHÔNG ĐỦ DỮ LIỆU"
-- KHÔNG suy đoán hay bịa đặt
+- Tìm THẤY thì TRẢ VỀ TẤT CẢ thông tin liên quan (KHÔNG bỏ qua)
+- LUÔN xem Related nodes - đây thường chứa thông tin quan trọng (year, month, age)
+- Nếu Related có "Mất" với year, đây là năm mất
+- Nếu Related có "Sinh" với year, đây là năm sinh
+- Trả về TẤT CẢ thông tin tìm được, KHÔNG cắt ngắn
 
-Trả về:
-1. Thông tin tìm được (nếu có)
-2. Hoặc "KHÔNG ĐỦ DỮ LIỆU" (nếu không tìm thấy)"""
+TRẢ VỀ: Tất cả thông tin liên quan đến câu hỏi, bao gồm cả Related nodes."""
 
-        # === FIX: Dùng flash model cho filter (nhanh hơn) ===
+        # === FIX: Debug response từ LLM filter ===
         try:
             response = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=0.1)
+            print(f"  [DEBUG] LLM filter response (first 300 chars): {response[:300] if response else 'EMPTY'}")
             
             # Kiểm tra nếu LLM nói không đủ dữ liệu
-            if "KHÔNG ĐỦ DỮ LIỆU" in response.upper():
-                print(f"  [WARNING] LLM returned: KHÔNG ĐỦ DỮ LIỆU")
-                return ""
+            if "KHÔNG ĐỦ DỮ LIỆU" in response.upper() or len(response.strip()) < 20:
+                print(f"  [WARNING] LLM returned minimal/empty response")
+                # FIX: Fallback - trả về raw context thay vì empty
+                # Vì có thể LLM filter đã loại bỏ thông tin quan trọng
+                return context_text[:2000]  # Return first 2000 chars of raw context
             
             return response.strip()
         except Exception as e:
             print(f"❌ Lỗi filter context: {e}")
             return context_text  # Fallback: return unfiltered
 
-    def _format_candidates(self, candidates: List[Dict]) -> str:
-        """Format candidates thành text readable."""
+    def _format_candidates(self, candidates: List[Dict], main_entity_name: str = None) -> str:
+        """Format candidates thành text readable - ƯU TIÊN main entity."""
         lines = []
+        
+        # === FIX: Ưu tiên main entity hiển thị ĐẦU TIÊN ===
+        main_entity_lines = []
+        other_lines = []
+        
+        main_entity_id = None
+        if main_entity_name:
+            for c in candidates:
+                cname = c.get("name", "").lower()
+                all_names = c.get("all_names", [])
+                if (cname and main_entity_name.lower() in cname) or \
+                   any(main_entity_name.lower() in n.get("value", "").lower() for n in all_names):
+                    main_entity_id = c.get("id")
+                    break
         
         for c in candidates:
             node_type = c.get("type", "Unknown")
@@ -1315,14 +1519,48 @@ Trả về:
                     if val and prop not in ["birth_date", "birth_year", "death_date", "death_year"]:
                         line += f"\n    - {prop}: {val}"
             
-            # Related
+            # Related - FIX: Hiển thị THÊM chi tiết (year, month, age) cho Event nodes
             related = c.get("related", [])
             if related:
                 line += "\n  Related:"
-                for r in related[:8]:
-                    line += f"\n    - {r.get('name', 'N/A')} ({r.get('type', '')}) [{r.get('rel', '')}]"
+                for r in related[:10]:
+                    rel_name = r.get('name', 'N/A')
+                    rel_text = r.get('rel', '')
+                    
+                    # Thêm chi tiết nếu có (đặc biệt cho Event: year, month, age)
+                    detail_parts = []
+                    if r.get('year'):
+                        detail_parts.append(f"năm {r['year']}")
+                    if r.get('month'):
+                        detail_parts.append(f"{r['month']}")
+                    if r.get('age'):
+                        detail_parts.append(f"tuổi {r['age']}")
+                    if r.get('date'):
+                        detail_parts.append(f"ngày {r['date']}")
+                    if r.get('description'):
+                        detail_parts.append(f"{r['description']}")
+                    
+                    detail_str = ""
+                    if detail_parts:
+                        detail_str = f" - {', '.join(detail_parts)}"
+                    
+                    # Hiển thị người liên quan đến Event (nếu có)
+                    related_persons_str = r.get('related_persons', '')
+                    
+                    # Ghép thành dòng hoàn chỉnh
+                    if rel_text:
+                        line += f"\n    - {rel_name}: {rel_text}{detail_str}{related_persons_str}"
+                    else:
+                        line += f"\n    - {rel_name} ({r.get('type', '')}){detail_str}{related_persons_str}"
             
-            lines.append(line)
+            # Phân chia: main entity vs others
+            if c.get("id") == main_entity_id:
+                main_entity_lines.append(line)
+            else:
+                other_lines.append(line)
+        
+        # Main entity luôn ở ĐẦU TIÊN
+        lines = main_entity_lines + other_lines
         
         return "\n".join(lines)
 
