@@ -13,3 +13,4 @@ langchain-experimental
 langchain-openai
 psycopg2-binary
 underthesea>=6.0.0
+python-multipart
