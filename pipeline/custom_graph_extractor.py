@@ -1,4 +1,4 @@
-"""Custom graph extractor - 1 LLM call cho cả node + relationship (CÁCH B - Linh hoạt)."""
+"""Custom graph extractor - Linh hoạt, cho phép tùy chỉnh prompt và mở rộng properties."""
 
 import json
 import os
@@ -15,325 +15,427 @@ load_dotenv()
 
 
 # ============================================================================
-# PROMPT SIÊU TOÀN DIỆN - 1 LLM CALL = NODE + RELATIONSHIP
+# CONFIG - TÙY CHỈNH PROMPT DỄ DÀNG
 # ============================================================================
 
-EXTRACTION_PROMPT = """Bạn là chuyên gia Knowledge Graph CHUYÊN SÂU. Phân tích đoạn văn và trích xuất TỐI ĐA nodes + relationships.
+class ExtractionConfig:
+    """Cấu hình cho extraction - tùy chỉnh dễ dàng."""
+    
+    def __init__(
+        self,
+        # Các properties BẮT BUỘC cho mỗi loại node (dict[str, str] - key: property_name, value: mô tả)
+        required_properties: Optional[Dict[str, Dict[str, str]]] = None,
+        
+        # Các relationship types được phép sử dụng
+        allowed_relationship_types: Optional[List[str]] = None,
+        
+        # Các node types được phép tạo
+        allowed_node_types: Optional[List[str]] = None,
+        
+        # Các properties MẶC ĐỊNH luôn thêm vào (bất kể LLM có nhắc đến hay không)
+        default_properties: Optional[Dict[str, Dict[str, Any]]] = None,
+        
+        # Custom instruction thêm vào cuối prompt
+        custom_instruction: str = "",
+        
+        # Priority target (ưu tiên trích xuất ai)
+        priority_target: str = "",
+        
+        # Có tạo Name nodes cho mỗi Person không
+        create_name_nodes: bool = True,
+        
+        # Có tạo Event nodes không
+        create_event_nodes: bool = True,
+        
+        # Có tạo Location nodes không  
+        create_location_nodes: bool = True,
+        
+        # Có tạo Organization nodes không
+        create_organization_nodes: bool = True,
+        
+        # Có extract temporal info (năm, tháng, ngày) không
+        extract_temporal: bool = True,
+        
+        # Có extract spatial info (địa điểm) không
+        extract_spatial: bool = True,
+        
+        # Có extract quan hệ gia đình không
+        extract_family: bool = True,
+        
+        # Có extract quan hệ chính trị/xã hội không
+        extract_social: bool = True,
+        
+        # Temperature cho LLM (0.0-1.0)
+        temperature: float = 0.2,
+        
+        # Max tokens cho response (None = unlimited)
+        max_tokens: Optional[int] = None,
+    ):
+        # Properties bắt buộc cho mỗi loại node
+        self.required_properties = required_properties or {
+            "Person": {
+                "name": "Tên đầy đủ của người",
+                "description": "Mô tả ngắn về người này (ai, làm gì, ý nghĩa)",
+            },
+            "Event": {
+                "name": "Tên sự kiện",
+                "description": "Mô tả sự kiện xảy ra gì",
+            },
+            "Location": {
+                "name": "Tên địa điểm",
+                "description": "Mô tả địa điểm",
+            },
+            "Organization": {
+                "name": "Tên tổ chức",
+                "description": "Mô tả tổ chức",
+            },
+            "Name": {
+                "name": "Tên biến thể",
+            },
+            "Work": {
+                "name": "Tên tác phẩm",
+                "description": "Mô tả tác phẩm",
+            },
+            "Concept": {
+                "name": "Tên khái niệm",
+                "description": "Mô tả khái niệm",
+            },
+        }
+        
+        # Relationship types được phép
+        self.allowed_relationship_types = allowed_relationship_types or [
+            # Gia đình
+            "PARENT_OF", "CHILD_OF", "SPOUSE_OF", "SIBLING_OF", "GRANDPARENT_OF", "GRANDCHILD_OF",
+            # Thầy trò
+            "MENTOR_OF", "STUDENT_OF", "TEACHER_OF", "TAUGHT_BY",
+            # Chính trị/Quân sự
+            "MEMBER_OF", "LEADER_OF", "FOUNDED", "FOUNDED_BY", "SUCCEEDED", "PREDECESSOR_OF",
+            "COMMANDED", "COMMANDED_BY", "ALLY_OF", "ENEMY_OF", "RIVAL_OF",
+            "APPOINTED_BY", "REVOLTED_AGAINST",
+            # Sự kiện
+            "PARTICIPATED_IN", "WITNESSED", "CAUSED", "LEAD_TO", "RESULTED_IN",
+            "PERFORMED", "ORGANIZED", "HOSTED",
+            # Ngoại giao
+            "MET_WITH", "NEGOTIATED_WITH", "SIGNED_TREATY", "REPRESENTED", "SENT", "RECEIVED_FROM",
+            # Địa lý
+            "LOCATED_AT", "BORN_IN", "DIED_AT", "RESIDED_IN", "STUDIED_AT", "WORKED_AT",
+            "RULED", "RULED_BY", "OCCURRED_IN", "OCCURRED_AT",
+            # Tên gọi
+            "HAS_NAME", "CALLED_AS", "KNOWN_AS", "ALSO_KNOWN_AS",
+            # Thành tựu
+            "ACHIEVED", "INVENTED", "CREATED", "AUTHORED", "COMPOSED", "BUILT",
+            "RECEIVED_AWARD", "GRANTED_TITLE", "RECEIVED_TITLE",
+            # Khác
+            "RELATED_TO", "ASSOCIATED_WITH", "BELONGED_TO", "EXPERT_IN", "INTERESTED_IN",
+            "SERVED_AS", "WORKED_IN", "MARRIED_TO", "DIVORCED_FROM",
+            "INTERACTED_WITH", "INFLUENCED", "INFLUENCED_BY",
+        ]
+        
+        # Node types được phép
+        self.allowed_node_types = allowed_node_types or [
+            "Person", "Event", "Location", "Organization", "Name",
+            "Work", "Concept", "Dynasty", "Era", "Field", "Document",
+            "Military", "Award", "Title", "Family", "Group",
+        ]
+        
+        # Properties mặc định luôn thêm
+        self.default_properties = default_properties or {}
+        
+        # Custom instruction
+        self.custom_instruction = custom_instruction
+        
+        # Priority target
+        self.priority_target = priority_target
+        
+        # Flags
+        self.create_name_nodes = create_name_nodes
+        self.create_event_nodes = create_event_nodes
+        self.create_location_nodes = create_location_nodes
+        self.create_organization_nodes = create_organization_nodes
+        self.extract_temporal = extract_temporal
+        self.extract_spatial = extract_spatial
+        self.extract_family = extract_family
+        self.extract_social = extract_social
+        
+        # LLM settings
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+    
+    def to_prompt_section(self) -> str:
+        """Convert config thành phần prompt."""
+        sections = []
+        
+        # Required properties
+        sections.append("\n【PROPERTIES BẮT BUỘC CHO MỖI NODE】")
+        for node_type, props in self.required_properties.items():
+            sections.append(f"\n{node_type}:")
+            for prop, desc in props.items():
+                sections.append(f"  - {prop}: {desc}")
+        
+        # Allowed relationships
+        sections.append("\n【RELATIONSHIP TYPES ĐƯỢC PHÉP】")
+        sections.append(f"({len(self.allowed_relationship_types)} types)")
+        sections.append(", ".join(self.allowed_relationship_types[:30]))
+        if len(self.allowed_relationship_types) > 30:
+            sections.append(f"... và {len(self.allowed_relationship_types) - 30} types khác")
+        
+        # Allowed node types
+        sections.append("\n【NODE TYPES ĐƯỢC PHÉP】")
+        sections.append(", ".join(self.allowed_node_types))
+        
+        # Flags
+        flags = []
+        if self.create_name_nodes: flags.append("Tạo Name nodes cho biến thể tên")
+        if self.create_event_nodes: flags.append("Tạo Event nodes")
+        if self.create_location_nodes: flags.append("Tạo Location nodes")
+        if self.create_organization_nodes: flags.append("Tạo Organization nodes")
+        if self.extract_temporal: flags.append("Trích xuất thông tin thời gian (năm, tháng, ngày)")
+        if self.extract_spatial: flags.append("Trích xuất thông tin không gian (địa điểm)")
+        if self.extract_family: flags.append("Trích xuất quan hệ gia đình")
+        if self.extract_social: flags.append("Trích xuất quan hệ chính trị/xã hội")
+        
+        if flags:
+            sections.append("\n【TÍNH NĂNG】")
+            for flag in flags:
+                sections.append(f"✓ {flag}")
+        
+        # Priority target
+        if self.priority_target:
+            sections.append(f"\n⚠️ ƯU TIÊN: '{self.priority_target}' và người có quan hệ trực tiếp")
+        
+        # Custom instruction
+        if self.custom_instruction:
+            sections.append(f"\n【HƯỚNG DẪN THÊM】")
+            sections.append(self.custom_instruction)
+        
+        return "\n".join(sections)
 
-⚠️ NGUYÊN TẮC SỐ 1: TRÍCH XUẤT KHÔNG GIỚI HẠN
-- Tạo node cho MỌI thứ được đề cập trong văn bản
-- Không bỏ sót bất kỳ nhân vật, sự kiện, địa điểm, khái niệm nào
-- Kể cả thông tin "nhỏ" như nghề nghiệp, chức vụ, năm sinh, năm mất
-- Tạo TẤT CẢ các biến thể tên (bí danh, tên lúc sinh, tước hiệu, phong hiệu)
 
-⚠️ NGUYÊN TẮC SỐ 2: KHÔNG CÓ NODE "MỒ CÔI"
-- MỌI node phải có ÍT NHẤT 1 relationship
-- Nếu một thông tin đứng một mình → kết nối với node chính
+# ============================================================================
+# DEFAULT CONFIG
+# ============================================================================
+
+DEFAULT_CONFIG = ExtractionConfig()
+
+
+# ============================================================================
+# ORIGINAL PROMPT - TẠO NHIỀU NODE VỚI CHIỀU SÂU (ENHANCED)
+# ============================================================================
+
+ORIGINAL_EXTRACTION_PROMPT = r"""Bạn là chuyên gia Knowledge Graph TUYỆT ĐỐI KHÔNG BỎ SÓT. Nhiệm vụ của bạn là trích xuất TẤT CẢ thông tin từ văn bản.
+
+⚠️ NGUYÊN TẮC TUYỆT ĐỐI SỐ 1: KHÔNG BỎ SÓT BẤT KỲ DATA NÀO
+- MỌI thông tin trong text phải được TRÍCH XUẤT
+- Kể cả thông tin NHỎ NHẤT như: tên chữ Hán, tên đệm, tên lót, bí danh, số điện thoại, địa chỉ...
+- Đặc biệt PHẢI TRÍCH XUẤT:
+  • Tên chữ Hán (Hán tự): ví dụ "Bảo Đại" → "保大"
+  • Các loại tên: khai sinh, tự, hiệu, tặng, tố, tước, thụy, miếu, đạo hiệu...
+  • Năm sinh, năm mất, ngày sinh, ngày mất (nếu có)
+  • Quê quán, nơi sinh, nơi mất (cụ thể đến làng/xã)
+  • Họ hàng, dòng tộc, gia đình
+  • Mọi chức vụ, chức danh đã từng giữ
+  • Mọi sự kiện liên quan dù nhỏ
+  • Mọi người dù liên quan đến targerperson ít
+
+⚠️ NGUYÊN TẮC TUYỆT ĐỐI SỐ 2: XÁC ĐỊnh NGƯỜI NHẬN/NGƯỜI THỰC HIỆN
+- VỚI MỌI HÀNH ĐỘNG phải xác định: AI LÀM, CHO AI, VỚI AI
+- Ví dụ: "trao ấn kiếm cho Trần Huy Liệu" → TẠO NODE Trần Huy Liệu + RELATIONSHIP
+- Ví dụ: "ông đã trao ấn tín và bảo kiếm" → TÌM XEM TRAO CHO AI → TẠO NODE + RELATIONSHIP GAVE_TO
+- Ví dụ: "Hồ Chí Minh đọc tuyên ngôn" → TẠO NODE Hồ Chí Minh + EVENT + RELATIONSHIP
+- Nếu text nói "trao/cấp/chuyển giao X cho/bởi Y" → PHẢI TÌM Y trong text
+- KHÔNG BAO GIỜ bỏ qua người nhận/người thực hiện
+
+⚠️ NGUYÊN TẮC SỐ 3: MỖI NODE PHẢI NHIỀU PROPERTIES
+- MỖI node PHẢI CÓ ÍT NHẤT 8-15 properties chi tiết
+- KHÔNG bao giờ tạo node chỉ có "name" + "description"
+- Tự động SUY LUẬN thêm properties nếu thấy hợp lý
+
+⚠️ NGUYÊN TẮC SỐ 3: MỌI NODE ĐỀU PHẢI KẾT NỐI
+- MỖI node phải có ÍT NHẤT 2-4 relationships
+- Không có node "treo lơ lửng" không kết nối
+
+⚠️ NGUYÊN TẮC SỐ 4: VÍ DỤ CÁCH ĐỌC TEXT
+- Text: "Bảo Đại (1913-1997), tên chữ Hán là 保大, tên khai sinh Nguyễn Phúc Vĩnh San, quê ở Huế..."
+→ Phải tạo:
+  • Node Person với: name, title, birth_year, death_year, han_name (保大), birth_place, dynasty, education, career, achievements, family...
+  • Node Name cho: 保大 (han_name), Nguyễn Phúc Vĩnh San (khai_sinh), Bảo Đại (hieu)...
+  • Node Location cho: Huế, Đại Nội Huế...
+  • Node Event cho: đăng quang, thoái vị...
 
 ==============================================================
-LOẠI 1: NGƯỜI (Person) - TẠO NODE CHO MỌI NGƯỜI ĐƯỢC NHẮC ĐẾN
+LOẠI 1: NGƯỜI (Person) - ĐẦY ĐỦ PROPERTIES
 ==============================================================
-├── TÊN CHÍNH → Node Person
-├── CÁC BIẾN THỂ TÊN (tạo node riêng):
-│   ├── Tên khai sinh → name_type: "birth_name"
-│   ├── Tên tục → name_type: "birth_name"
-│   ├── Tên chữ (Hán Việt) → name_type: "chữ_học"
-│   ├── Tên hiệu (hiệu) → name_type: "tên_hiệu"
-│   ├── Tự xưng → name_type: "tự_xưng"
-│   ├── Tước vị (Vua, Hầu, Công...) → name_type: "tước_vị"
-│   ├── Tôn hiệu (hoàng đế) → name_type: "tôn_hiệu"
-│   ├── Thụy hiệu → name_type: "thụy_hiệu"
-│   ├── Miếu hiệu → name_type: "miếu_hiệu"
-│   ├── Bí danh, Bút danh → name_type: "bí_danh"
-│   └── Biệt danh, biệt hiệu → name_type: "biệt_danh"
-├── NĂM SINH/NĂM MẤT → properties: birth_year, death_year
-├── NƠI SINH/NƠI MẤT → Location
-├── QUAN HỆ GIA ĐÌNH:
-│   ├── Cha → CHILD_OF / PARENT_OF
-│   ├── Mẹ → CHILD_OF / PARENT_OF
+├── PROPERTIES BẮT BUỘC (ít nhất 10):
+│   ├── name: Tên đầy đủ
+│   ├── title: Danh hiệu/tước vị (Hoàng đế, Vua, Đại tướng, Giáo sư...)
+│   ├── han_name: Tên chữ Hán (ví dụ: 保大, 阮惠...)
+│   ├── birth_name: Tên khai sinh
+│   ├── birth_year, death_year
+│   ├── birth_month, birth_day, death_month, death_day (nếu có)
+│   ├── birth_place, death_place
+│   ├── dynasty: Triều đại
+│   ├── role: Vai trò/chức vụ chính
+│   └── description: Mô tả đầy đủ 2-3 câu
+├── PROPERTIES BỔ SUNG (thêm từ text):
+│   ├── reign_start, reign_end: Năm trị vì
+│   ├── temple_name: Miếu hiệu
+│   ├── posthumous_name: Thụy hiệu
+│   ├── courtesy_name: Tự
+│   ├── art_name: Hiệu
+│   ├── childhood_name: Tên trẻ thơ
+│   ├── pen_name: Bút danh
+│   ├── education: Học vấn, trường học
+│   ├── career: Sự nghiệp, chức vụ đã giữ
+│   ├── personality: Tính cách nổi bật
+│   ├── achievements: Thành tựu nổi bật
+│   ├── family_background: Gia đình gốc
+│   ├── notable_relationships: Quan hệ đáng chú ý
+│   ├── quotes: Câu nói nổi tiếng
+│   └── any_info: Mọi thông tin khác từ text
+├── CÁC BIẾN THỂ TÊN - TẠO NODE RIÊNG:
+│   ├── Tên chữ Hán → name_type: "han_name" + thuộc tính han_name
+│   ├── Tên khai sinh → name_type: "khai_sinh"
+│   ├── Tên tự → name_type: "tu"
+│   ├── Tên hiệu → name_type: "hieu"
+│   ├── Tên tặng → name_type: "tang"
+│   ├── Tên tố → name_type: "to"
+│   ├── Tước vị → name_type: "tuoc_vi"
+│   ├── Thụy hiệu → name_type: "thuy_hieu"
+│   ├── Miếu hiệu → name_type: "mieu_hieu"
+│   ├── Bút danh → name_type: "but_danh"
+│   └── Biệt danh → name_type: "biet_danh"
+├── QUAN HỆ BẮT BUỘC (ít nhất 3-4):
+│   ├── Cha/Mẹ → PARENT_OF / CHILD_OF
 │   ├── Vợ/Chồng → SPOUSE_OF
 │   ├── Con cái → PARENT_OF / CHILD_OF
 │   ├── Anh chị em → SIBLING_OF
-│   ├── Ông bà → GRANDPARENT_OF / GRANDCHILD_OF
-│   └── Họ hàng (chú, bác, cậu, dì...) → EXTENDED_FAMILY_OF
-├── QUAN HỆ THẦY-TRÒ:
-│   ├── Thầy → STUDENT_OF / MENTOR_OF
-│   ├── Trò → MENTOR_OF / STUDENT_OF
-│   ├── Sư phụ → STUDENT_OF
-│   └── Đồ đệ → MENTOR_OF
-├── QUAN HỆ CHÍNH TRỊ/QUÂN SỰ:
-│   ├── Tiền nhiệm → PREDECESSOR_OF / SUCCEEDED
-│   ├── Kế nhiệm → SUCCEEDED / PREDECESSOR_OF
-│   ├── Cộng sự → ALLY_OF
-│   ├── Đối thủ/Kẻ thù → ENEMY_OF / RIVAL_OF
-│   ├── Tham mưu → ADVISOR_TO
-│   ├── Tướng lĩnh dưới quyền → COMMANDED / COMMANDED_BY
-│   ├── Bộ trưởng → APPOINTED / APPOINTED_BY
-│   └── Quan lại → GOVERNED / GOVERNED_BY
-├── VAI TRÒ/CHỨC VỤ:
-│   ├── Chức vụ → SERVED_AS
-│   ├── Triều đại → RULED_DURING / SERVED_DURING
-│   └── Cấp bậc quân đội → RANK_OF
-├── GIÁO DỤC:
-│   ├── Học tại → STUDIED_AT
-│   ├── Đỗ đạt → PASSED_EXAM
-│   └── Trường học → location của STUDIED_AT
-└── TÍNH CÁCH/SỞ TRƯỜNG:
-    └── Tính cách nổi bật → PERSONALITY_TRAIT
-    └── Kỹ năng → SKILL_OF
+│   ├── Thầy → MENTOR_OF
+│   ├── Trò → STUDENT_OF
+│   ├── Chủ → SERVED_UNDER
+│   ├── Người nhận đồ → GAVE_TO / RECEIVED_FROM
+│   ├── Người trao đồ → RECEIVED_FROM / GAVE_TO
+│   └── Kẻ thù/Đối thủ → ENEMY_OF
+└── SỰ KIỆN ĐÃ THAM GIA: PARTICIPATED_IN
 
 ==============================================================
-LOẠI 2: SỰ KIỆN (Event) - TẠO NODE CHO MỌI SỰ KIỆN
+LOẠI 2: SỰ KIỆN (Event) - PROPERTIES BẮT BUỘC (ÍT NHẤT 8)
 ==============================================================
-├── SỰ KIỆN CHÍNH TRỊ:
-│   ├── Đăng quang/Ngày lên ngôi → CORONATION_OF
-│   ├── Thoái vị → ABDICATED
-│   ├── Cải cách, Đổi mới → INITIATED
-│   ├── Xử tử, Giết → EXECUTED / ASSASSINATED
-│   ├── Tha bổng, Giải thoát → RELEASED
-│   └── Lưu đày, Truyền bá → EXILED
-├── SỰ KIỆN QUÂN SỰ:
-│   ├── Trận đánh/Chiến trận → BATTLE_OF / PARTICIPATED_IN
-│   ├── Chiến thắng → VICTORY_IN / DEFEATED
-│   ├── Thua trận → DEFEAT_IN
-│   ├── Bị bao vây → SIEGE_OF
-│   ├── Bắt giữ → CAPTURED / CAPTURED_BY
-│   ├── Quân đội tham gia → ARMED_FORCES_IN
-│   └── Chiến dịch → LED_CAMPAIGN
-├── SỰ KIỆN NGOẠI GIAO:
-│   ├── Ký hiệp ước → SIGNED_TREATY
-│   ├── Công du → STATE_VISIT
-│   ├── Liên minh → FORMED_ALLIANCE
-│   └── Đàm phán → NEGOTIATED
-├── SỰ KIỆN VĂN HÓA/XÃ HỘI:
-│   ├── Xây dựng công trình → CONSTRUCTED
-│   ├── Sáng tác tác phẩm → CREATED
-│   ├── Tổ chức hội nghị → HOSTED
-│   └── Cải cách xã hội → REFORMED
-├── SỰ KIỆN CÁ NHÂN:
-│   ├── Sinh → BORN_AT
-│   ├── Mất → DIED_AT
-│   ├── Kết hôn → MARRIED_TO
-│   ├── Lập gia đình → FOUNDED_FAMILY
-│   └── Qua đời tại → DIED_IN
-├── THỜI GIAN SỰ KIỆN:
-│   ├── Năm cụ thể → OCCURRED_IN (properties: year)
-│   ├── Tháng/Ngày → OCCURRED_ON (properties: date)
-│   └── Thời kỳ → OCCURRED_DURING
-└── ĐỊA ĐIỂM:
-    └── LOCATED_AT → Location
+├── PROPERTIES BẮT BUỘC:
+│   ├── name: Tên sự kiện đầy đủ
+│   ├── type: Loại (chính trị, quân sự, ngoại giao, văn hóa, cá nhân)
+│   ├── year, month, day
+│   ├── location: Địa điểm
+│   ├── description: Mô tả chi tiết
+│   └── significance: Ý nghĩa lịch sử
+├── PROPERTIES TÙY CHỌN:
+│   ├── causes, participants, results
+│   ├── duration, outcome, scale
+│   ├── casualties, before, after
+│   └── any_detail
+├── LOẠI SỰ KIỆN:
+│   ├── CORONATION, ABDICATION, REFORM, EXECUTION, EXILE
+│   ├── BATTLE, VICTORY, DEFEAT, SIEGE, CAPTURE
+│   ├── TREATY, STATE_VISIT, ALLIANCE, NEGOTIATION
+│   └── CONSTRUCTION, CREATION, CONFERENCE
+└── QUAN HỆ: PARTICIPATED_IN, OCCURRED_AT, OCCURRED_IN, CAUSED, LEAD_TO
 
 ==============================================================
 LOẠI 3: TRIỀU ĐẠI/THỜI KỲ (Era/Dynasty)
 ==============================================================
-├── Triều đại → RULING_DYNASTY / RULED_BY
-├── Thời kỳ lịch sử → HISTORICAL_PERIOD
-├── Kỷ nguyên → ERA
-├── Thế kỷ → CENTURY
-├── Năm → properties: year
-└── Mối quan hệ:
-    ├── Người trị vì → RULED_DURING
-    ├── Người sáng lập → FOUNDED
-    └── Người khai sáng → ESTABLISHED
+├── PROPERTIES: name, start_year, end_year, capital, founder, last_ruler, num_rulers, description
+└── QUAN HỆ: RULED_DURING, FOUNDED, CAPITAL_OF, OCCURRED_DURING
 
 ==============================================================
-LOẠI 4: TỔ CHỨC/ĐOÀN THỂ (Organization)
+LOẠI 4: TỔ CHỨC (Organization)
 ==============================================================
-├── Tổ chức chính trị:
-│   ├── Đảng → MEMBER_OF / LED_BY / FOUNDED
-│   ├── Nhà nước → HEAD_OF / GOVERNED_BY
-│   └── Triều đình → SERVED_IN / RULED_BY
-├── Tổ chức quân sự:
-│   ├── Quân đội → SERVED_IN / COMMANDED
-│   ├── Quân chủng → BELONGED_TO
-│   └── Lực lượng vũ trang → ARMED_FORCE_OF
-├── Tổ chức tôn giáo:
-│   ├── Giáo hội → MEMBER_OF
-│   ├── Chùa/Tu viện → FOUNDED / LED_BY
-│   └── Tăng sĩ → ORDAINED_BY
-├── Tổ chức kinh tế:
-│   ├── Công ty → FOUNDED / EMPLOYED_AT
-│   └── Thương hội → MEMBER_OF
-└── VAI TRÒ TRONG TỔ CHỨC:
-    ├── Chủ tịch/Trưởng → LED_BY / HEAD_OF
-    ├── Thành viên → MEMBER_OF
-    ├── Sáng lập → FOUNDED_BY
-    └── Nhân viên → EMPLOYED_AT
+├── PROPERTIES: name, type, founded_year, dissolved_year, founder, leader, purpose, description
+└── QUAN HỆ: MEMBER_OF, LED_BY, FOUNDED_BY, PARTICIPATED_IN
 
 ==============================================================
 LOẠI 5: ĐỊA ĐIỂM (Location)
 ==============================================================
-├── QUỐC GIA/VÙNG LÃNH THỔ:
-│   └── Quốc gia → FROM_COUNTRY / RULED
-├── TỈNH/THÀNH PHỐ:
-│   ├── Tỉnh → FROM_PROVINCE / GOVERNED
-│   └── Thành phố → FROM_CITY / GOVERNED
-├── QUÊ QUÁN/NƠI SINH:
-│   └── Người → BORN_IN / FROM_PLACE
-├── NƠI MẤT:
-│   └── Người → DIED_AT / DIED_IN
-├── NƠI CƯ TRÚ:
-│   ├── Cư trú → RESIDED_IN
-│   ├── Học tập → STUDIED_AT
-│   └── Làm việc → WORKED_AT
-├── ĐỊA DANH LỊCH SỬ:
-│   ├── Thành trì → LOCATED_AT
-│   ├── Pháo đài → FORTIFIED
-│   ├── Cung điện → LOCATED_AT / CONSTRUCTED
-│   └── Di tích → HISTORICAL_SITE
-├── ĐỊA HÌNH:
-│   ├── Sông → LOCATED_AT
-│   ├── Núi → LOCATED_AT
-│   ├── Biển → LOCATED_AT
-│   └── Rừng → LOCATED_AT
-└── ĐỊA ĐIỂM TRONG SỰ KIỆN:
-    └── Sự kiện → LOCATED_AT
+├── PROPERTIES: name, type, country, region, historical_significance, description
+└── QUAN HỆ: BORN_IN, DIED_AT, OCCURRED_IN, RULED, LOCATED_AT
 
 ==============================================================
-LOẠI 6: THÀNH TỰU/THÀNH TÍCH (Achievement)
-==============================================================
-├── THÀNH TỰU CHÍNH:
-│   ├── Thành tựu quân sự → ACHIEVED_VICTORY
-│   ├── Thành tựu chính trị → ACHIEVED_POLITICALLY
-│   ├── Thành tựu văn hóa → ACHIEVED_CULTURALLY
-│   └── Thành tựu kinh tế → ACHIEVED_ECONOMICALLY
-├── GIẢI THƯỞNG/DANH HIỆU:
-│   ├── Tước vị → RECEIVED_TITLE
-│   ├── Phong tặng → GRANTED_TITLE
-│   ├── Giải thưởng → RECEIVED_AWARD
-│   └── Vinh danh → HONORED_WITH
-├── CÔNG TRÌNH XÂY DỰNG:
-│   ├── Công trình kiến trúc → BUILT / CONSTRUCTED
-│   ├── Đập, kênh → BUILT
-│   └── Thành, lũy → BUILT / FORTIFIED
-├── SÁNG TÁC:
-│   ├── Tác phẩm văn học → AUTHORED
-│   ├── Nhạc phẩm → COMPOSED
-│   ├── Tranh ảnh → CREATED
-│   └── Phát minh → INVENTED
-└── TÍNH CÁCH NỔI BẬT:
-    └── Thuộc tính đặc biệt → HAS_TRAIT
-
-==============================================================
-LOẠI 7: TÁC PHẨM/VĂN HÓA VẬT THỂ (Work)
-==============================================================
-├── VĂN HỌC:
-│   ├── Sách → AUTHORED
-│   ├── Bài viết → WROTE
-│   ├── Thơ → COMPOSED
-│   ├── Văn bia → INSCRIBED
-│   └── Châu bản → COMPILED
-├── NGHỆ THUẬT:
-│   ├── Tranh → PAINTED / CREATED
-│   ├── Tượng → SCULPTED
-│   ├── Kiến trúc → DESIGNED / BUILT
-│   └── Nghệ thuật thủ công → CRAFTED
-├── ÂM NHẠC:
-│   ├── Nhạc phẩm → COMPOSED
-│   └── Ca khúc → COMPOSED
-├── PHÁT MINH/SÁNG CHẾ:
-│   ├── Phát minh → INVENTED
-│   ├── Cải tiến → IMPROVED
-│   └── Kỹ thuật → DEVELOPED
-└── NGỮ LIỆU LỊCH SỬ:
-    ├── Biên niên sử → COMPILED
-    └── Chính sử → AUTHORED
-
-==============================================================
-LOẠI 8: KHÁI NIỆM/LĨNH VỰC (Field/Concept)
-==============================================================
-├── LĨNH VỰC HOẠT ĐỘNG:
-│   ├── Quân sự → EXPERT_IN_MILITARY / WORKED_IN
-│   ├── Chính trị → EXPERT_IN_POLITICS / WORKED_IN
-│   ├── Văn hóa → EXPERT_IN_CULTURE / WORKED_IN
-│   ├── Kinh tế → EXPERT_IN_ECONOMICS / WORKED_IN
-│   ├── Tôn giáo → EXPERT_IN_RELIGION / WORKED_IN
-│   └── Ngoại giao → EXPERT_IN_DIPLOMACY / WORKED_IN
-├── TRƯỜNG PHÁI:
-│   ├── Trường phái tư tưởng → BELONGED_TO
-│   ├── Trường phái nghệ thuật → BELONGED_TO
-│   └── Trường phái quân sự → BELONGED_TO
-├── CHÍNH SÁCH/QUAN ĐIỂM:
-│   ├── Chính sách → IMPLEMENTED_POLICY
-│   └── Quan điểm → HELD_VIEW
-└── HỌC THUYẾT/LÝ THUYẾT:
-    ├── Học thuyết → PROPOUNDED
-    └── Lý thuyết → DEVELOPED
-
-==============================================================
-LOẠI 9: VĂN BẢN/TÀI LIỆU (Document)
-==============================================================
-├── Văn bản pháp luật:
-│   ├── Luật → PROMULGATED
-│   ├── Chiếu → DECREED
-│   └── Sắc lệnh → DECREED
-├── Văn bản ngoại giao:
-│   ├── Hiệp ước → SIGNED
-│   ├── Thư tín → CORRESPONDED
-│   └── Tuyên ngôn → DECLARED
-├── Văn bản văn học:
-│   ├── Tác phẩm → AUTHORED
-│   └── Bản thảo → WROTE
-└── TÀI LIỆU LỊCH SỬ:
-    └── Biên bản → RECORDED
-
-==============================================================
-LOẠI 10: QUÂN ĐỘI/VŨ KHÍ (Military)
-==============================================================
-├── QUÂN ĐỘI:
-│   ├── Quân đội chính quy → LED / COMMANDED
-│   ├── Quân chủng → COMMANDED
-│   └── Lực lượng đặc biệt → LED
-├── VŨ KHÍ/TRANG BỊ:
-│   ├── Vũ khí → INVENTED / USED_WEAPON
-│   └── Phương tiện → DEVELOPED
-└── CHIẾN THUẬT/CHIẾN LƯỢC:
-    ├── Chiến thuật → DEPLOYED_TACTIC
-    └── Chiến lược → DEVISED_STRATEGY
-
-==============================================================
-VÍ DỤ MINH HỌA (TẠO TỐI ĐA NODES)
+VÍ DỤ MINH HỌA (RICH PROPERTIES - ĐẦY ĐỦ)
 ==============================================================
 
-Input: "Bảo Đại (1913-1997), tên khai sinh Nguyễn Phúc Vĩnh San, quê ở Huế, là vị Hoàng đế cuối cùng của Việt Nam thuộc Nhà Nguyễn. Năm 1926, ông đăng quang tại Đại Nội Huế. Năm 1945, ông thoái vị dưới áp lực của Cách mạng. Vợ ông là Nam Phương hoàng hậu. Ông là con trai của vua Khải Định. Chú ông là Hoàng Tường, em vua Khải Định."
+Input: "Bảo Đại (1913-1997), tên chữ Hán là 保大, tên khai sinh Nguyễn Phúc Vĩnh San, quê ở Huế, là vị Hoàng đế cuối cùng của Việt Nam thuộc Nhà Nguyễn. Ngày 30/8/1945, ông thoái vị tại Đại Nội Huế và trao ấn tín, bảo kiếm cho Trần Huy Liệu - Chủ tịch Ủy ban kháng chiến miền Nam Việt Nam. Ông là con trai của vua Khải Định. Vợ ông là Nam Phương hoàng hậu."
 
-Output ĐÚNG (tạo TỐI ĐA nodes):
+Output ĐÚNG (RICH - ĐẦY ĐỦ + NGƯỜI NHẬN):
 ```json
 {{
   "nodes": [
-    {{"id": "p1", "type": "Person", "name": "Bảo Đại", "properties": {{"title": "Hoàng đế cuối cùng Việt Nam", "birth_year": 1913, "death_year": 1997, "notes": "Nhà Nguyễn"}}}},
-    {{"id": "n1", "type": "Name", "name": "Nguyễn Phúc Vĩnh San", "properties": {{"name_type": "khai_sinh"}}}},
-    {{"id": "n2", "type": "Name", "name": "Hoàng đế", "properties": {{"name_type": "tước_vị"}}}},
-    {{"id": "l1", "type": "Location", "name": "Huế", "properties": {{"type": "quê_quán", "description": "Thành phố Huế"}}}},
-    {{"id": "l2", "type": "Location", "name": "Đại Nội Huế", "properties": {{"type": "cung_điện", "description": "Hoàng cung Huế"}}}},
-    {{"id": "l3", "type": "Location", "name": "Việt Nam", "properties": {{"type": "quốc_gia"}}}},
-    {{"id": "dy1", "type": "Dynasty", "name": "Nhà Nguyễn", "properties": {{"period": "1802-1945"}}}},
-
-    {{"id": "e1", "type": "Event", "name": "Đăng quang Bảo Đại 1926", "properties": {{"year": 1926, "type": "đăng_quang"}}}},
-    {{"id": "e2", "type": "Event", "name": "Thoái vị Bảo Đại 1945", "properties": {{"year": 1945, "type": "thoái_vị"}}}},
-    {{"id": "e3", "type": "Event", "name": "Cách mạng tháng Tám 1945", "properties": {{"year": 1945}}}},
-
-    {{"id": "p2", "type": "Person", "name": "Nam Phương hoàng hậu", "properties": {{"title": "Hoàng hậu", "role": "vợ vua Bảo Đại"}}}},
-    {{"id": "p3", "type": "Person", "name": "Khải Định", "properties": {{"title": "Vua", "dynasty": "Nhà Nguyễn"}}}},
-    {{"id": "p4", "type": "Person", "name": "Hoàng Tường", "properties": {{"title": "Hoàng tử", "relation": "chú Bảo Đại"}}}}
+    {{
+      "id": "p1", 
+      "type": "Person", 
+      "name": "Bảo Đại",
+      "properties": {{
+        "title": "Hoàng đế cuối cùng Việt Nam",
+        "role": "Hoàng đế nhà Nguyễn",
+        "han_name": "保大",
+        "birth_name": "Nguyễn Phúc Vĩnh San",
+        "birth_year": 1913,
+        "death_year": 1997,
+        "birth_place": "Huế, Việt Nam",
+        "death_place": "Paris, Pháp",
+        "dynasty": "Nhà Nguyễn",
+        "reign_start": 1926,
+        "reign_end": 1945,
+        "education": "Học tại Pháp",
+        "career": "Hoàng đế (1926-1945), Đại sứ Việt Nam tại Pháp",
+        "family_background": "Con trai vua Khải Định, chắt vua Minh Mạng",
+        "achievements": "Hoàn thành việc chuyển giao quyền lực hòa bình",
+        "description": "Vị hoàng đế cuối cùng của Việt Nam, trị vì từ 1926 đến 1945"
+      }}
+    }},
+    {{
+      "id": "p_thl", 
+      "type": "Person", 
+      "name": "Trần Huy Liệu",
+      "properties": {{
+        "title": "Chủ tịch Ủy ban kháng chiến miền Nam Việt Nam",
+        "role": "Nhà cách mạng",
+        "birth_year": 1903,
+        "death_year": 1970,
+        "birth_place": "Hà Nội, Việt Nam",
+        "description": "Người được Bảo Đại trao ấn tín, bảo kiếm khi thoái vị năm 1945"
+      }}
+    }},
+    {{
+      "id": "n_han", 
+      "type": "Name", 
+      "name": "保大",
+      "properties": {{
+        "name_type": "han_name",
+        "meaning": "Bảo = Giữ, Đại = Lớn",
+        "pronunciation": "Bảo Đại"
+      }}
+    }},
+    {{
+      "id": "e_thv", 
+      "type": "Event", 
+      "name": "Bảo Đại thoái vị 1945",
+      "properties": {{
+        "type": "chính_trị",
+        "year": 1945,
+        "month": 8,
+        "day": 30,
+        "location": "Đại Nội Huế, Huế, Việt Nam",
+        "description": "Bảo Đại chính thức thoái vị",
+        "significance": "Chấm dứt chế độ quân chủ ở Việt Nam",
+        "action": "trao ấn tín, bảo kiếm"
+      }}
+    }}
   ],
   "relationships": [
-    {{"from": "p1", "type": "HAS_NAME", "to": "n1", "properties": {{"name_type": "khai_sinh"}}}},
-    {{"from": "p1", "type": "HAS_NAME", "to": "n2", "properties": {{"name_type": "tước_vị"}}}},
-    {{"from": "p1", "type": "BORN_IN", "to": "l1", "properties": {{"year": 1913}}}},
-    {{"from": "p1", "type": "FROM_PLACE", "to": "l1"}},
-    {{"from": "p1", "type": "RULED", "to": "l3"}},
-    {{"from": "p1", "type": "RULED_DURING", "to": "dy1"}},
-    {{"from": "p3", "type": "PARENT_OF", "to": "p1"}},
+    {{"from": "p1", "type": "HAS_NAME", "to": "n_han", "properties": {{"name_type": "han_name"}}}},
     {{"from": "p1", "type": "CHILD_OF", "to": "p3"}},
-    {{"from": "p4", "type": "SIBLING_OF", "to": "p3"}},
     {{"from": "p1", "type": "SPOUSE_OF", "to": "p2"}},
-    {{"from": "e1", "type": "LOCATED_AT", "to": "l2"}},
-    {{"from": "e1", "type": "OCCURRED_IN", "to": "l2", "properties": {{"year": 1926}}}},
-    {{"from": "p1", "type": "PERFORMED", "to": "e1"}},
-    {{"from": "p1", "type": "PERFORMED", "to": "e2"}},
-    {{"from": "e3", "type": "CAUSED", "to": "e2"}},
-    {{"from": "e2", "type": "OCCURRED_IN", "to": "l3", "properties": {{"year": 1945}}}}
+    {{"from": "p1", "type": "PERFORMED", "to": "e_thv"}},
+    {{"from": "e_thv", "type": "GAVE_TO", "to": "p_thl", "properties": {{"item": "ấn tín, bảo kiếm"}}}},
+    {{"from": "p_thl", "type": "RECEIVED_FROM", "to": "p1", "properties": {{"item": "ấn tín, bảo kiếm"}}}}
   ]
 }}
 ```
@@ -342,21 +444,77 @@ Output ĐÚNG (tạo TỐI ĐA nodes):
 THỰC HÀNH - ĐOẠN VĂN CẦN PHÂN TÍCH
 ==============================================================
 
-{{text}}
+{text}
 
 ==============================================================
-YÊU CẦU BẮT BUỘC:
+YÊU CẦU BẮT BUỘC - ĐỌC KỸ:
 ==============================================================
-1. TRÍCH XUẤT TỐI ĐA - Tạo node cho MỌI thứ được nhắc đến
-2. MỖI node phải có ÍT NHẤT 1 relationship
-3. Tạo biến thể tên cho MỌI người (tên chính, tên khai sinh, tước vị...)
-4. Tạo node Event cho MỌI sự kiện có năm/thời gian
-5. Tạo node Location cho MỌI địa điểm được nhắc
-6. Nếu có quan hệ gia đình → tạo relationship GIA ĐÌNH
-7. KHÔNG có node "treo lơ lửng" không kết nối
-8. Thêm properties year, date, description nếu có trong văn bản
+1. MỖI NODE PHẢI CÓ ÍT NHẤT 5-10 PROPERTIES chi tiết từ text
+2. KHÔNG tạo node với chỉ name + description
+3. TỰ DO THÊM properties bất kỳ từ text
+4. MỖI NODE phải có ÍT NHẤT 2-3 RELATIONSHIPS
+5. Tạo BIẾN THỂ TÊN cho MỌI người
+6. Tạo node EVENT cho MỌI sự kiện có thông tin
+7. Tạo node LOCATION cho MỌI địa điểm
+8. TRÍCH XUẤT TỐI ĐA thông tin từ text
+9. XÁC ĐỊNH NGƯỜI NHẬN/NGƯỜI THỰC HIỆN cho MỌI hành động
+   - "trao X cho Y" → TẠO NODE Y + GAVE_TO
+   - "nhận X từ Y" → TẠO NODE Y + RECEIVED_FROM
+   - "làm gì với ai" → TÌM người đó trong text
+{filter_instruction}
 
 Output JSON (CHỈ JSON, KHÔNG text khác):
+{
+    "nodes": [...],
+    "relationships": [...]
+}
+"""
+
+
+# ============================================================================
+# BASE PROMPT - NỀN TẢNG CHO PROMPT ĐỘNG
+# ============================================================================
+
+BASE_PROMPT_TEMPLATE = """Bạn là chuyên gia Knowledge Graph CHUYÊN SÂU. Phân tích đoạn văn và trích xuất nodes + relationships.
+
+⚠️ NGUYÊN TẮC TUYỆT ĐỐI: KHÔNG BỎ SÓT THÔNG TIN
+- MỌI người, sự kiện, địa điểm, tổ chức, khái niệm trong text → TẠO NODE
+- TẠO NODE với TẤT CẢ thông tin có trong text (KHÔNG giới hạn properties)
+- Tự do thêm properties BẤT KỲ khi thấy cần thiết từ text
+
+==============================================================
+CẤU HÌNH EXTRACTION
+==============================================================
+{config}
+
+==============================================================
+MỞ RỘNG PROPERTIES TỰ DO
+==============================================================
+
+Ngoài properties đã liệt kê, TỰ DO thêm bất kỳ properties nào từ text:
+- Mọi thông tin về người: năm sinh/mất, quê quán, học vấn, sự nghiệp, tính cách...
+- Mọi thông tin về sự kiện: thời gian, địa điểm, người tham gia, kết quả, ý nghĩa...
+- Mọi thông tin về địa điểm: quốc gia, loại, ý nghĩa lịch sử...
+- Mọi thông tin về tổ chức: năm thành lập, lãnh đạo, mục tiêu, thành tựu...
+- Mọi thông tin khác: giải thưởng, danh hiệu, tác phẩm, phát minh...
+
+==============================================================
+ĐOẠN VĂN CẦN PHÂN TÍCH
+==============================================================
+
+{text}
+
+==============================================================
+YÊU CẦU BẮT BUỘC
+==============================================================
+1. MỌI thứ trong text → TẠO NODE với ĐẦY ĐỦ properties
+2. Tự do thêm properties BẤT KỲ khi thấy thông tin trong text
+3. TẠO TỐI ĐA relationships - kết nối mọi thứ liên quan
+4. KHÔNG có node rỗng (phải có description hoặc mô tả tương đương)
+5. Sử dụng relationship types từ danh sách được phép
+6. {priority_instruction}
+
+Output JSON (CHỈ JSON):
 {{
     "nodes": [...],
     "relationships": [...]
@@ -364,74 +522,396 @@ Output JSON (CHỈ JSON, KHÔNG text khác):
 """
 
 
-class CustomGraphExtractor:
-    """Extract nodes + relationships trong 1 LLM call DUY NHẤT."""
+def build_extraction_prompt(
+    text: str,
+    config: Optional["ExtractionConfig"] = None,
+) -> str:
+    """
+    Build prompt từ config - linh hoạt, tùy chỉnh được.
+    
+    Args:
+        text: Text cần phân tích
+        config: Cấu hình extraction (None = dùng default)
+    
+    Returns:
+        Prompt hoàn chỉnh
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
+    
+    priority_instruction = ""
+    if config.priority_target:
+        priority_instruction = "Ưu tiên: '" + config.priority_target + "' và người có quan hệ trực tiếp với '" + config.priority_target + "'"
+    else:
+        priority_instruction = "Trích xuất TỐI ĐA thông tin, không bỏ sót gì"
+    
+    # Use replace instead of format to avoid JSON brace issues
+    prompt = BASE_PROMPT_TEMPLATE.replace("{config}", config.to_prompt_section())
+    prompt = prompt.replace("{text}", text)
+    prompt = prompt.replace("{priority_instruction}", priority_instruction)
+    return prompt
 
-    def __init__(self, graph_db: Optional[GraphDB] = None, model: Optional[str] = None):
+
+def build_original_prompt(
+    text: str,
+    target_person: Optional[str] = None,
+) -> str:
+    """
+    Build ORIGINAL PROMPT - giữ nguyên logic cũ tạo NHIỀU node.
+    
+    Args:
+        text: Text cần phân tích
+        target_person: Người ưu tiên (None = trích xuất tất cả)
+    
+    Returns:
+        Prompt hoàn chỉnh
+    """
+    filter_instruction = ""
+    if target_person:
+        filter_instruction = "⚠️ Ưu tiên: '" + target_person + "' và người có quan hệ trực tiếp. Tuy nhiên vẫn trích xuất TỐI ĐA những gì được nhắc đến."
+    else:
+        filter_instruction = "⚠️ TRÍCH XUẤT TỐI ĐA - không bỏ sót bất kỳ thông tin nào!"
+    
+    # Use replace instead of format to avoid JSON brace issues
+    prompt = ORIGINAL_EXTRACTION_PROMPT.replace("{text}", text)
+    prompt = prompt.replace("{filter_instruction}", filter_instruction)
+    return prompt
+
+
+# ============================================================================
+# PRESET CONFIGS - CẤU HÌNH SẴN
+# ============================================================================
+
+PRESET_CONFIGS = {
+    # Cấu hình mặc định - cân bằng
+    "default": ExtractionConfig(),
+    
+    # Cấu hình cho lịch sử Việt Nam
+    "vietnam_history": ExtractionConfig(
+        priority_target="",
+        extract_family=True,
+        extract_social=True,
+        custom_instruction="""- Ưu tiên trích xuất: năm sinh/mất, triều đại, chức vụ, tước vị
+- Với vua/chúa: trích xuất tên thật, tên hiệu, thụy hiệu, miếu hiệu
+- Với sự kiện: trích xuất ngày/tháng/năm chính xác, địa điểm, nhân vật
+- Với tổ chức: trích xuất năm thành lập, người sáng lập, mục tiêu""",
+        required_properties={
+            "Person": {
+                "name": "Tên đầy đủ",
+                "title": "Danh hiệu/tước vị",
+                "role": "Vai trò/chức vụ",
+                "birth_year": "Năm sinh",
+                "death_year": "Năm mất",
+                "birth_place": "Nơi sinh",
+                "description": "Mô tả ngắn (ai, làm gì, ý nghĩa)",
+                "dynasty": "Triều đại (nếu có)",
+                "achievements": "Thành tựu nổi bật",
+                "notable_facts": "Sự kiện đáng chú ý",
+            },
+            "Event": {
+                "name": "Tên sự kiện",
+                "year": "Năm",
+                "month": "Tháng",
+                "day": "Ngày",
+                "type": "Loại sự kiện",
+                "location": "Địa điểm",
+                "description": "Mô tả sự kiện",
+                "significance": "Ý nghĩa lịch sử",
+                "participants": "Người tham gia",
+            },
+            "Location": {
+                "name": "Tên địa điểm",
+                "type": "Loại (quốc gia, tỉnh, thành phố...)",
+                "country": "Quốc gia",
+                "description": "Mô tả",
+                "historical_role": "Vai trò lịch sử",
+            },
+            "Organization": {
+                "name": "Tên tổ chức",
+                "full_name": "Tên đầy đủ",
+                "type": "Loại (chính trị, quân sự...)",
+                "founded_year": "Năm thành lập",
+                "leader": "Người sáng lập/lãnh đạo",
+                "description": "Mô tả",
+            },
+            "Dynasty": {
+                "name": "Tên triều đại",
+                "start_year": "Năm bắt đầu",
+                "end_year": "Năm kết thúc",
+                "description": "Mô tả",
+            },
+        },
+    ),
+    
+    # Cấu hình cho khoa học/công nghệ
+    "science_tech": ExtractionConfig(
+        extract_family=False,
+        extract_social=True,
+        custom_instruction="""- Ưu tiên trích xuất: lĩnh vực nghiên cứu, phát minh/sáng chế, giải thưởng
+- Với nhà khoa học: trích xuất năm sinh/mất, trường đại học, lĩnh vực, học trò
+- Với phát minh: trích xuất năm, người phát minh, ý nghĩa, ứng dụng
+- Với giải thưởng: trích xuất tên giải thưởng, năm, người nhận""",
+        required_properties={
+            "Person": {
+                "name": "Tên nhà khoa học",
+                "birth_year": "Năm sinh",
+                "death_year": "Năm mất",
+                "field": "Lĩnh vực nghiên cứu",
+                "institution": "Tổ chức/trường",
+                "description": "Mô tả",
+                "awards": "Giải thưởng",
+                "inventions": "Phát minh/sáng chế",
+            },
+            "Concept": {
+                "name": "Tên khái niệm/lý thuyết",
+                "field": "Lĩnh vực",
+                "description": "Mô tả",
+                "discovered_by": "Người phát hiện",
+                "year_discovered": "Năm phát hiện",
+            },
+            "Work": {
+                "name": "Tên công trình/tác phẩm",
+                "type": "Loại",
+                "author": "Tác giả",
+                "year": "Năm",
+                "description": "Mô tả",
+            },
+        },
+    ),
+    
+    # Cấu hình cho văn học/nghệ thuật
+    "literature_art": ExtractionConfig(
+        extract_family=True,
+        extract_social=True,
+        custom_instruction="""- Ưu tiên trích xuất: tác phẩm, thể loại, giải thưởng, trường phái
+- Với tác giả: trích xuất năm sinh/mất, tác phẩm chính, phong cách
+- Với tác phẩm: trích xuất năm xuất bản, thể loại, tác giả, nhân vật chính
+- Với nghệ sĩ: trích xuất thể loại, tác phẩm tiêu biểu, trường phái""",
+        required_properties={
+            "Person": {
+                "name": "Tên tác giả/nghệ sĩ",
+                "birth_year": "Năm sinh",
+                "death_year": "Năm mất",
+                "genre": "Thể loại",
+                "style": "Phong cách",
+                "description": "Mô tả",
+                "major_works": "Tác phẩm chính",
+                "awards": "Giải thưởng",
+            },
+            "Work": {
+                "name": "Tên tác phẩm",
+                "type": "Loại (văn học, hội họa, âm nhạc...)",
+                "author": "Tác giả",
+                "year": "Năm sáng tác/xuất bản",
+                "description": "Mô tả",
+                "genre": "Thể loại",
+                "significance": "Ý nghĩa",
+            },
+        },
+    ),
+    
+    # Cấu hình tối thiểu - chỉ lấy thông tin cơ bản
+    "minimal": ExtractionConfig(
+        create_name_nodes=False,
+        create_event_nodes=True,
+        create_location_nodes=True,
+        create_organization_nodes=True,
+        extract_temporal=True,
+        extract_spatial=True,
+        extract_family=True,
+        extract_social=True,
+        custom_instruction="Chỉ trích xuất thông tin CƠ BẢN nhất, không thêm quá nhiều chi tiết",
+        required_properties={
+            "Person": {
+                "name": "Tên",
+                "description": "Mô tả ngắn",
+            },
+            "Event": {
+                "name": "Tên sự kiện",
+                "description": "Mô tả",
+            },
+        },
+    ),
+    
+    # Cấu hình tối đa - lấy mọi thứ có thể
+    "maximum": ExtractionConfig(
+        custom_instruction="""TRÍCH XUẤT TỐI ĐA:
+- Mọi thông tin về mọi người: tên, tuổi, nghề nghiệp, tính cách, sở thích, câu nói nổi tiếng...
+- Mọi thông tin về mọi sự kiện: chi tiết, phụ lục, hậu quả, nhân chứng...
+- Mọi thông tin về mọi địa điểm: lịch sử, dân số, đặc điểm...
+- Mọi mối quan hệ có thể có
+- Mọi thông tin bổ sung: ngày tháng, con số, so sánh...""",
+    ),
+}
+
+
+def get_preset_config(name: str) -> ExtractionConfig:
+    """Lấy preset config theo tên."""
+    return PRESET_CONFIGS.get(name, DEFAULT_CONFIG)
+
+
+def create_custom_config(**kwargs) -> ExtractionConfig:
+    """Tạo config tùy chỉnh từ kwargs."""
+    return ExtractionConfig(**kwargs)
+
+
+# ============================================================================
+# MAIN EXTRACTOR CLASS
+# ============================================================================
+
+class CustomGraphExtractor:
+    """Extract nodes + relationships với extraction linh hoạt."""
+
+    def __init__(
+        self, 
+        graph_db: Optional[GraphDB] = None, 
+        model: Optional[str] = None,
+        config: Optional[ExtractionConfig] = None,
+    ):
         self.graph_db = graph_db or GraphDB()
         self.builder = GraphBuilder(graph_db=self.graph_db)
         self.model = model or os.getenv("YESCALE_MODEL", "gemini-2.0-flash")
+        self.config = config or DEFAULT_CONFIG
         
         api_key = os.getenv("YESCALE_API_KEY")
         if not api_key:
             raise RuntimeError("YESCALE_API_KEY chưa được cấu hình trong env.")
+
+    def set_config(self, config: ExtractionConfig):
+        """Thay đổi config."""
+        self.config = config
+    
+    def set_preset(self, preset_name: str):
+        """Đặt preset config."""
+        self.config = get_preset_config(preset_name)
+    
+    def update_config(self, **kwargs):
+        """Cập nhật config hiện tại."""
+        for key, value in kwargs.items():
+            if hasattr(self.config, key):
+                setattr(self.config, key, value)
 
     def extract_from_text(
         self,
         text: str,
         source_chunk_id: Optional[str] = None,
         target_person: Optional[str] = None,
+        config: Optional[ExtractionConfig] = None,
+        use_original_prompt: bool = True,
     ) -> Dict[str, Any]:
         """
-        Extract nodes và relationships TRONG 1 LLM CALL.
+        Extract nodes và relationships với config linh hoạt.
+        
+        Args:
+            text: Text cần phân tích
+            source_chunk_id: ID của chunk nguồn
+            target_person: Ưu tiên người này
+            config: Cấu hình extraction (None = dùng config của instance)
+            use_original_prompt: True = dùng prompt gốc (nhiều node), False = dùng config-based prompt
         
         Returns:
-            dict với "nodes" và "relationships" - đảm bảo mọi node đều có relationship!
+            dict với "nodes" và "relationships"
         """
-        # Build prompt
-        additional_filter = ""
+        use_config = config or self.config
+        
+        # Override priority_target nếu có target_person
         if target_person:
-            additional_filter = f"\n\n⚠️ LƯU Ý: Ưu tiên thông tin về '{target_person}'. Nếu có người khác, chỉ trích xuất nếu họ có quan hệ TRỰC TIẾP với '{target_person}'."
-
-        prompt = EXTRACTION_PROMPT.replace("{{text}}", text) + additional_filter
+            use_config.priority_target = target_person
+        
+        # Build prompt
+        if use_original_prompt:
+            # Dùng ORIGINAL PROMPT - tạo NHIỀU node nhất có thể
+            prompt = build_original_prompt(text, target_person)
+        else:
+            # Dùng CONFIG-BASED PROMPT - linh hoạt theo config
+            prompt = build_extraction_prompt(text, use_config)
 
         try:
-            print(f"[DEBUG] Calling LLM once for extraction...")
-            response = call_llm(prompt, model=self.model, temperature=0.2)
+            print(f"[DEBUG] Calling LLM for extraction...")
+            print(f"[DEBUG] Using {'ORIGINAL' if use_original_prompt else 'CONFIG'} prompt mode")
+            response = call_llm(prompt, model=self.model, temperature=use_config.temperature)
             
             # Parse JSON
             data = json.loads(response)
             
         except json.JSONDecodeError:
-            # Fallback: try to extract JSON from response
             try:
                 json_match = re.search(r'\{.*\}', response, re.DOTALL)
                 if json_match:
                     data = json.loads(json_match.group())
                 else:
                     print(f"⚠️ Failed to parse LLM response as JSON")
-                    print(f"Response (first 300 chars): {response[:300]}")
                     return {"nodes": [], "relationships": []}
             except Exception as e:
                 print(f"⚠️ Error parsing LLM response: {e}")
                 return {"nodes": [], "relationships": []}
 
-        # Validate: ensure no orphan nodes
-        data = self._validate_and_fix_relationships(data)
+        # Validate và enrich
+        data = self._validate_and_fix_relationships(data, text)
+        data = self._enrich_properties_from_text(data, text)
 
-        # Debug output
         print(f"[DEBUG] Extracted: {len(data.get('nodes', []))} nodes, {len(data.get('relationships', []))} relationships")
         
         return data
 
-    def _validate_and_fix_relationships(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Validate và fix orphan nodes - đảm bảo mọi node đều có relationship.
-        """
+    def _enrich_properties_from_text(self, data: Dict[str, Any], text: str) -> Dict[str, Any]:
+        """Post-process: Enrich missing properties từ text gốc (rule-based)."""
+        nodes = data.get("nodes", [])
+        
+        year_pattern = r'(\d{4})(?:-(\d{4}))?'
+        birth_pattern = r'(?:sinh|năm sinh)[:\s]*(\d{4})'
+        death_pattern = r'(?:mất|năm mất|qua đời)[:\s]*(\d{4})'
+        
+        for node in nodes:
+            if node.get("type") != "Person":
+                continue
+                
+            props = node.get("properties", {})
+            name = node.get("name", "")
+            
+            if not props.get("birth_year"):
+                match = re.search(birth_pattern, text)
+                if match:
+                    props["birth_year"] = int(match.group(1))
+            
+            if not props.get("death_year"):
+                match = re.search(death_pattern, text)
+                if match:
+                    props["death_year"] = int(match.group(1))
+            
+            location_keywords = ["ở", "tại", "quê", "quê quán"]
+            for keyword in location_keywords:
+                pattern = rf'{keyword}\s+([^,\.]+?)(?:,|\.|$)'
+                match = re.search(pattern, text)
+                if match and not props.get("birth_place"):
+                    place = match.group(1).strip()
+                    if 2 < len(place) < 50:
+                        props["birth_place"] = place
+            
+            org_keywords = ["thuộc", "đảng", "viện", "hội", "quân đội"]
+            for keyword in org_keywords:
+                pattern = rf'{re.escape(name)}[^\.]*{keyword}\s+([^,\.]+?)(?:,|\.|$)'
+                match = re.search(pattern, text)
+                if match and not props.get("organization"):
+                    org = match.group(1).strip()
+                    if 2 < len(org) < 50:
+                        props["organization"] = org
+                        break
+            
+            node["properties"] = props
+        
+        data["nodes"] = nodes
+        return data
+
+    def _validate_and_fix_relationships(
+        self, 
+        data: Dict[str, Any], 
+        text: str = ""
+    ) -> Dict[str, Any]:
+        """Validate và fix orphan nodes."""
         nodes = data.get("nodes", [])
         relationships = data.get("relationships", [])
         
-        # Build set of connected node IDs
         connected_ids = set()
         for rel in relationships:
             if rel.get("from"):
@@ -439,7 +919,6 @@ class CustomGraphExtractor:
             if rel.get("to"):
                 connected_ids.add(rel["to"])
         
-        # Find orphan nodes
         orphan_nodes = []
         for node in nodes:
             node_id = node.get("id")
@@ -448,28 +927,28 @@ class CustomGraphExtractor:
         
         if orphan_nodes:
             print(f"[DEBUG] Found {len(orphan_nodes)} orphan nodes, trying to fix...")
-            # Try to auto-link orphans based on name similarity or type
             for orphan in orphan_nodes:
-                fixed = self._fix_orphan_node(orphan, nodes, relationships)
-                if fixed:
-                    print(f"[DEBUG] Fixed orphan: {orphan.get('name', orphan.get('id'))}")
+                self._fix_orphan_node(orphan, nodes, relationships, text)
         
+        data["nodes"] = nodes
+        data["relationships"] = relationships
         return data
 
-    def _fix_orphan_node(self, orphan: Dict, all_nodes: List[Dict], relationships: List[Dict]) -> bool:
-        """
-        Thử fix một orphan node bằng cách tạo relationship thông minh.
-        """
+    def _fix_orphan_node(
+        self, 
+        orphan: Dict, 
+        all_nodes: List[Dict], 
+        relationships: List[Dict],
+        text: str = ""
+    ) -> bool:
+        """Fix orphan node."""
         orphan_id = orphan.get("id")
         orphan_type = orphan.get("type")
         orphan_name = orphan.get("name", "")
         
-        # Strategy 1: Name nodes → link to Person with similar name context
         if orphan_type == "Name":
-            # Find a Person node that might own this name
             for node in all_nodes:
                 if node.get("type") == "Person":
-                    # Check if Person name is similar to Name node context
                     person_name = node.get("name", "")
                     if any(word in orphan_name for word in person_name.split() if len(word) > 3):
                         relationships.append({
@@ -480,7 +959,6 @@ class CustomGraphExtractor:
                         })
                         return True
         
-        # Strategy 2: Event nodes → try to link to any Person mentioned
         if orphan_type == "Event":
             for node in all_nodes:
                 if node.get("type") == "Person":
@@ -494,7 +972,6 @@ class CustomGraphExtractor:
                         })
                         return True
         
-        # Strategy 3: Location nodes → try to link to Person or Event
         if orphan_type == "Location":
             for node in all_nodes:
                 if node.get("type") in ["Person", "Event"]:
@@ -509,20 +986,27 @@ class CustomGraphExtractor:
                         })
                         return True
         
+        if orphan_type == "Organization":
+            for node in all_nodes:
+                if node.get("type") == "Person":
+                    props = node.get("properties", {})
+                    if props.get("organization") == orphan_name:
+                        relationships.append({
+                            "from": node.get("id"),
+                            "type": "MEMBER_OF",
+                            "to": orphan_id,
+                            "properties": {}
+                        })
+                        return True
+        
         return False
 
     def build_from_extraction(self, extracted_data: Dict[str, Any]) -> Tuple[int, int]:
-        """
-        Build graph từ extracted data (flexible format).
-        
-        Returns:
-            (nodes_created, relationships_created)
-        """
+        """Build graph từ extracted data."""
         nodes = []
         rels = []
         node_lookup = {}
 
-        # Process nodes
         for node in extracted_data.get("nodes", []):
             node_id = node.get("id")
             node_type = node.get("type", "Unknown")
@@ -532,7 +1016,6 @@ class CustomGraphExtractor:
             if node_id:
                 node_lookup[node_id] = node
 
-            # Determine identifier based on type
             if node_type == "Name":
                 identifier = {"value": node_name}
             else:
@@ -544,7 +1027,6 @@ class CustomGraphExtractor:
                 "properties": node_props
             })
 
-        # Process relationships
         for rel in extracted_data.get("relationships", []):
             from_id = rel.get("from")
             to_id = rel.get("to")
@@ -558,7 +1040,6 @@ class CustomGraphExtractor:
             from_name = from_node.get("name", from_id)
             to_name = to_node.get("name", to_id)
 
-            # Determine identifiers based on types
             if from_type == "Name":
                 from_id_dict = {"value": from_name}
             else:
@@ -578,7 +1059,7 @@ class CustomGraphExtractor:
                 "properties": rel.get("properties", {}),
             })
 
-        # Legacy support for old format (persons, achievements, events, etc.)
+        # Legacy support
         for person in extracted_data.get("persons", []):
             person_name = person.get("name")
             if not person_name:
@@ -591,56 +1072,10 @@ class CustomGraphExtractor:
                     "role": person.get("role"),
                     "birth_year": person.get("birth_year"),
                     "death_year": person.get("death_year"),
+                    "description": person.get("description", ""),
                 }
             })
 
-            for name_entry in person.get("names", []):
-                name_value = name_entry.get("value")
-                name_type = name_entry.get("type", "alias")
-                if name_value:
-                    nodes.append({
-                        "type": "Name",
-                        "identifier": {"value": name_value},
-                        "properties": {"name_type": name_type}
-                    })
-                    rels.append({
-                        "from_type": "Person",
-                        "from_id": {"name": person_name},
-                        "rel_type": "HAS_NAME",
-                        "to_type": "Name",
-                        "to_id": {"value": name_value},
-                        "properties": {"name_type": name_type},
-                    })
-
-        for achievement in extracted_data.get("achievements", []):
-            nodes.append({
-                "type": "Achievement",
-                "identifier": {"name": achievement.get("name")},
-                "properties": {"year": achievement.get("year"), "description": achievement.get("description")}
-            })
-
-        for event in extracted_data.get("events", []):
-            nodes.append({
-                "type": "Event",
-                "identifier": {"name": event.get("name")},
-                "properties": {"year": event.get("year"), "description": event.get("description")}
-            })
-
-        for era in extracted_data.get("eras", []):
-            nodes.append({
-                "type": "Era",
-                "identifier": {"name": era.get("name")},
-                "properties": {"start_year": era.get("start_year"), "end_year": era.get("end_year")}
-            })
-
-        for field in extracted_data.get("fields", []):
-            nodes.append({
-                "type": "Field",
-                "identifier": {"name": field.get("name")},
-                "properties": {"category": field.get("category")}
-            })
-
-        # Build to Neo4j
         if nodes or rels:
             result = self.builder.batch_create_nodes(nodes)
             if isinstance(result, dict):
@@ -660,8 +1095,8 @@ class CustomGraphExtractor:
                         rel_properties=rel.get("properties", {})
                     )
                     relationships_created += 1
-                except Exception as e:
-                    pass  # Relationship might already exist
+                except Exception:
+                    pass
 
         else:
             nodes_created = 0
@@ -674,20 +1109,26 @@ class CustomGraphExtractor:
         text: str,
         source_chunk_id: Optional[str] = None,
         link_to_person: Optional[str] = None,
+        use_original_prompt: bool = True,
     ) -> Tuple[int, int]:
         """
-        Enrich text: extract và build graph trong 1 LLM call.
+        Enrich text: extract và build graph.
         
         Args:
-            text: Text to extract from
-            source_chunk_id: Source chunk identifier  
-            link_to_person: Person name to focus extraction on
+            text: Text cần phân tích
+            source_chunk_id: ID của chunk nguồn
+            link_to_person: Người ưu tiên
+            use_original_prompt: True = dùng prompt gốc (nhiều node), False = dùng config-based prompt
         
         Returns:
             (nodes_created, relationships_created)
         """
-        # Single LLM call for both extraction and relationship
-        extracted = self.extract_from_text(text, source_chunk_id, target_person=link_to_person)
+        extracted = self.extract_from_text(
+            text, 
+            source_chunk_id, 
+            target_person=link_to_person,
+            use_original_prompt=use_original_prompt,
+        )
         nodes_created, rels_created = self.build_from_extraction(extracted)
         
         return nodes_created, rels_created
@@ -718,3 +1159,89 @@ class CustomGraphExtractor:
                 print(f"  Error chunk {cid}: {e}")
 
         return {"nodes_created": total_nodes, "relationships_created": total_rels}
+
+
+# ============================================================================
+# CONVENIENCE FUNCTIONS
+# ============================================================================
+
+def extract_with_preset(
+    text: str, 
+    preset: str = "default",
+    target_person: Optional[str] = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Extract với preset config - tiện lợi cho sử dụng nhanh.
+    
+    Args:
+        text: Text cần phân tích
+        preset: Tên preset ("default", "vietnam_history", "science_tech", "literature_art", "minimal", "maximum")
+        target_person: Ưu tiên người này
+        **kwargs: Override config
+    
+    Returns:
+        Extracted data
+    
+    Examples:
+        # Dùng preset sẵn
+        data = extract_with_preset(text, "vietnam_history")
+        
+        # Dùng preset với override
+        data = extract_with_preset(text, "vietnam_history", custom_instruction="Thêm thông tin về...")
+        
+        # Dùng config tùy chỉnh hoàn toàn
+        config = ExtractionConfig(
+            priority_target="Hồ Chí Minh",
+            custom_instruction="Ưu tiên thông tin cách mạng",
+            required_properties={...}
+        )
+        data = extract_with_preset(text, preset="default", config=config)
+    """
+    config = get_preset_config(preset)
+    
+    # Override với kwargs
+    for key, value in kwargs.items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+    
+    if target_person:
+        config.priority_target = target_person
+    
+    extractor = CustomGraphExtractor(config=config)
+    return extractor.extract_from_text(text, target_person=target_person)
+
+
+# ============================================================================
+# USAGE EXAMPLES (uncomment to test)
+# ============================================================================
+
+if __name__ == "__main__":
+    # Ví dụ 1: Dùng preset sẵn
+    print("=" * 50)
+    print("Ví dụ 1: Preset Vietnam History")
+    print("=" * 50)
+    config = get_preset_config("vietnam_history")
+    print(config.to_prompt_section())
+    
+    # Ví dụ 2: Tạo config tùy chỉnh
+    print("\n" + "=" * 50)
+    print("Ví dụ 2: Config tùy chỉnh")
+    print("=" * 50)
+    custom_config = ExtractionConfig(
+        priority_target="Hồ Chí Minh",
+        custom_instruction="Chỉ trích xuất thông tin về hoạt động cách mạng",
+        temperature=0.1,
+    )
+    print(custom_config.to_prompt_section())
+    
+    # Ví dụ 3: Update config hiện tại
+    print("\n" + "=" * 50)
+    print("Ví dụ 3: Update config")
+    print("=" * 50)
+    extractor = CustomGraphExtractor()
+    extractor.update_config(
+        priority_target="Trần Hưng Đạo",
+        custom_instruction="Thêm thông tin về chiến trận",
+    )
+    print("Config updated!")

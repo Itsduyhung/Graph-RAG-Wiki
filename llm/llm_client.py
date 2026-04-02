@@ -2,6 +2,7 @@
 """LLM client dùng YEScale (Gemini 2.0 Flash) thay cho Ollama."""
 
 import os
+import time
 from typing import Optional
 
 import requests
@@ -17,6 +18,7 @@ YESCALE_BASE_URL = os.getenv(
 YESCALE_MODEL = os.getenv("YESCALE_MODEL", "gemini-2.0-flash")
 YESCALE_API_KEY = os.getenv("YESCALE_API_KEY")
 YESCALE_TIMEOUT = int(os.getenv("YESCALE_TIMEOUT", "300" if "2.5-pro" in os.getenv("YESCALE_MODEL", "") else "120"))
+YESCALE_MAX_RETRIES = int(os.getenv("YESCALE_MAX_RETRIES", "3"))
 
 
 def call_llm(
@@ -28,6 +30,7 @@ def call_llm(
 ) -> str:
     """
     Gọi LLM qua YEScale (Gemini 2.0 Flash) với API kiểu OpenAI chat/completions.
+    Có retry logic với exponential backoff.
     """
     if not YESCALE_API_KEY:
         raise RuntimeError(
@@ -59,21 +62,45 @@ def call_llm(
         "Content-Type": "application/json",
     }
 
-    try:
-        response = requests.post(
-            YESCALE_BASE_URL,
-            json=payload,
-            headers=headers,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        data = response.json()
-        # OpenAI‑style response
-        return data["choices"][0]["message"]["content"]
-    except requests.exceptions.RequestException as e:
-        raise ConnectionError(
-            f"Không thể kết nối đến YEScale tại {YESCALE_BASE_URL}. Error: {e}"
-        )
+    # Retry logic with exponential backoff
+    last_error = None
+    for attempt in range(YESCALE_MAX_RETRIES):
+        try:
+            response = requests.post(
+                YESCALE_BASE_URL,
+                json=payload,
+                headers=headers,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            # OpenAI‑style response
+            return data["choices"][0]["message"]["content"]
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response else None
+            # 524 = Gateway Timeout - retry
+            if status_code == 524:
+                wait_time = (attempt + 1) * 10  # 10, 20, 30 seconds
+                print(f"[RETRY] YEScale timeout (524), attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
+                time.sleep(wait_time)
+                last_error = e
+                continue
+            # Other HTTP errors - don't retry
+            raise ConnectionError(
+                f"Không thể kết nối đến YEScale. HTTP Error: {e}"
+            )
+        except requests.exceptions.RequestException as e:
+            # Connection errors - retry with backoff
+            wait_time = (attempt + 1) * 5
+            print(f"[RETRY] YEScale connection error, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
+            time.sleep(wait_time)
+            last_error = e
+            continue
+
+    # All retries exhausted
+    raise ConnectionError(
+        f"Không thể kết nối đến YEScale sau {YESCALE_MAX_RETRIES} lần thử. Error: {last_error}"
+    )
 
 
 def call_llm_with_context(

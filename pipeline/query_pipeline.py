@@ -1000,45 +1000,42 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
 
     def _expand_graph(self, candidates: List[Dict]) -> List[Dict]:
         """
-        Expand graph từ candidates - GIỚI HẠN tổng số nodes để tránh noise.
+        Expand graph từ candidates - TĂNG GIỚI HẠN để lấy nhiều context hơn.
         
-        FIX: Giới hạn total nodes = 50
-        FIX: Ưu tiên entity chính vào expanded TRƯỚC để đảm bảo không bị mất
+        FIX: Tăng total nodes = 200 (từ 50)
+        FIX: Tăng neighbors = 20 (từ 5)
         """
         if not candidates:
             return []
 
-        MAX_TOTAL_NODES = 50
-        RESERVE_FOR_MAIN = 10  # Số nodes reserved cho main entity
+        MAX_TOTAL_NODES = 200  # Tăng từ 50 lên 200
+        RESERVE_FOR_MAIN = 30  # Tăng từ 10 lên 30
 
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             expanded = {}
             
-            # === FIX: Tìm và ƯU TIÊN thêm main entity vào expanded ĐẦU TIÊN ===
+            # === Tìm và ƯU TIÊN thêm main entity vào expanded ĐẦU TIÊN ===
             main_entity_id = None
             for c in candidates:
-                # Entity chính thường có score >= 2.0 (exact match)
                 if c.get("score", 0) >= 2.0 and c.get("type") == "Person":
                     main_entity_id = c["id"]
                     break
             
-            # Nếu không có candidate nào score cao, lấy candidate đầu tiên
             if not main_entity_id and candidates:
                 main_entity_id = candidates[0]["id"]
             
-            # Thêm main entity vào expanded TRƯỚC TIÊN
             if main_entity_id:
                 main_context = self._get_person_context(session, main_entity_id)
                 expanded[main_entity_id] = main_context
                 print(f"  [Expand] Main entity added first: {main_context.get('name', 'unknown')}")
             
-            # === Phase 1: Thu thập elementIds từ candidates (bỏ qua main_entity đã thêm) ===
+            # === Phase 1: Thu thập elementIds từ candidates ===
             all_ids = {}
             
             for c in candidates:
                 cid = c["id"]
                 if cid == main_entity_id:
-                    continue  # Đã thêm rồi, bỏ qua
+                    continue
                 if len(all_ids) >= MAX_TOTAL_NODES - RESERVE_FOR_MAIN:
                     break
                 all_ids[cid] = {
@@ -1048,8 +1045,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 }
             
             # === Phase 2: EXPAND NEIGHBORHOOD (2-hop) ===
-            # Giới hạn số neighbors cho mỗi candidate để tránh lấp đầy 50 nodes quá nhanh
-            NEIGHBORS_PER_CANDIDATE = 5  # Giảm từ 50 xuống 5
+            NEIGHBORS_PER_CANDIDATE = 20  # Tăng từ 5 lên 20
             
             for cid, cinfo in all_ids.items():
                 if len(expanded) >= MAX_TOTAL_NODES - RESERVE_FOR_MAIN:
@@ -1074,11 +1070,9 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     ntype = list(neighbor.labels)[0] if neighbor.labels else "Unknown"
                     nname = neighbor.get("name", "") or neighbor.get("value", "")
                     
-                    # Lấy relationship info
                     if rels:
                         rel = rels[0]
                         rel_type = type(rel).__name__
-                        # Kiểm tra chiều: startNode có phải là center không
                         try:
                             is_outgoing = rel.start_node.element_id == cid
                         except:
@@ -1096,12 +1090,12 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                             "rel_type": rel_type, "is_outgoing": is_outgoing,
                             "all_names": [], "related": [], "properties": node_props
                         }
-                        # Event related - bidirectional
+                        # Event related - lấy nhiều hơn
                         event_related = session.run("""
                             MATCH (e)-[r]-(related)
                             WHERE elementId(e) = $eid
                             RETURN related.name as rel_name, labels(related)[0] as rel_type, type(r) as relationship
-                            LIMIT 20
+                            LIMIT 50
                         """, eid=nid)
                         for er in event_related:
                             rln = er.get("rel_name", "")
@@ -1127,7 +1121,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                         MATCH (e)-[r]-(p:Person)
                         WHERE elementId(e) = $eid
                         RETURN DISTINCT elementId(p) as pid
-                        LIMIT 5
+                        LIMIT 20
                     """, eid=cid)
                     for pr in person_result:
                         if len(expanded) >= MAX_TOTAL_NODES - RESERVE_FOR_MAIN:
@@ -1226,7 +1220,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                    related.age as rel_age,
                    related.description as rel_description,
                    related.date as rel_date
-            LIMIT 30
+            LIMIT 100
         """, peid=person_eid)
         
         for rr in related_result:
@@ -1523,7 +1517,7 @@ TRẢ VỀ: Tất cả thông tin liên quan đến câu hỏi, bao gồm cả R
             related = c.get("related", [])
             if related:
                 line += "\n  Related:"
-                for r in related[:10]:
+                for r in related[:50]:  # Tăng từ 10 lên 50
                     rel_name = r.get('name', 'N/A')
                     rel_text = r.get('rel', '')
                     
