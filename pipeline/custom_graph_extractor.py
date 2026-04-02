@@ -18,162 +18,349 @@ load_dotenv()
 # PROMPT SIÊU TOÀN DIỆN - 1 LLM CALL = NODE + RELATIONSHIP
 # ============================================================================
 
-EXTRACTION_PROMPT = """Bạn là chuyên gia Knowledge Graph. Phân tích đoạn văn và trích xuất ĐẦY ĐỦ nodes + relationships.
+EXTRACTION_PROMPT = """Bạn là chuyên gia Knowledge Graph CHUYÊN SÂU. Phân tích đoạn văn và trích xuất TỐI ĐA nodes + relationships.
 
-QUY TẮC VÀNG:
-1. KHÔNG có node "mồ côi" - MỌI node phải có ÍT NHẤT 1 relationship
-2. Nếu thấy thông tin về ai đó → tạo node + kết nối ngay
-3. Tất cả nodes phải liên quan đến nhau, không tạo node "treo lơ lửng"
+⚠️ NGUYÊN TẮC SỐ 1: TRÍCH XUẤT KHÔNG GIỚI HẠN
+- Tạo node cho MỌI thứ được đề cập trong văn bản
+- Không bỏ sót bất kỳ nhân vật, sự kiện, địa điểm, khái niệm nào
+- Kể cả thông tin "nhỏ" như nghề nghiệp, chức vụ, năm sinh, năm mất
+- Tạo TẤT CẢ các biến thể tên (bí danh, tên lúc sinh, tước hiệu, phong hiệu)
+
+⚠️ NGUYÊN TẮC SỐ 2: KHÔNG CÓ NODE "MỒ CÔI"
+- MỌI node phải có ÍT NHẤT 1 relationship
+- Nếu một thông tin đứng một mình → kết nối với node chính
 
 ==============================================================
-PHÂN LOẠI NODE VÀ RELATIONSHIP TỰ ĐỘNG
+LOẠI 1: NGƯỜI (Person) - TẠO NODE CHO MỌI NGƯỜI ĐƯỢC NHẮC ĐẾN
 ==============================================================
+├── TÊN CHÍNH → Node Person
+├── CÁC BIẾN THỂ TÊN (tạo node riêng):
+│   ├── Tên khai sinh → name_type: "birth_name"
+│   ├── Tên tục → name_type: "birth_name"
+│   ├── Tên chữ (Hán Việt) → name_type: "chữ_học"
+│   ├── Tên hiệu (hiệu) → name_type: "tên_hiệu"
+│   ├── Tự xưng → name_type: "tự_xưng"
+│   ├── Tước vị (Vua, Hầu, Công...) → name_type: "tước_vị"
+│   ├── Tôn hiệu (hoàng đế) → name_type: "tôn_hiệu"
+│   ├── Thụy hiệu → name_type: "thụy_hiệu"
+│   ├── Miếu hiệu → name_type: "miếu_hiệu"
+│   ├── Bí danh, Bút danh → name_type: "bí_danh"
+│   └── Biệt danh, biệt hiệu → name_type: "biệt_danh"
+├── NĂM SINH/NĂM MẤT → properties: birth_year, death_year
+├── NƠI SINH/NƠI MẤT → Location
+├── QUAN HỆ GIA ĐÌNH:
+│   ├── Cha → CHILD_OF / PARENT_OF
+│   ├── Mẹ → CHILD_OF / PARENT_OF
+│   ├── Vợ/Chồng → SPOUSE_OF
+│   ├── Con cái → PARENT_OF / CHILD_OF
+│   ├── Anh chị em → SIBLING_OF
+│   ├── Ông bà → GRANDPARENT_OF / GRANDCHILD_OF
+│   └── Họ hàng (chú, bác, cậu, dì...) → EXTENDED_FAMILY_OF
+├── QUAN HỆ THẦY-TRÒ:
+│   ├── Thầy → STUDENT_OF / MENTOR_OF
+│   ├── Trò → MENTOR_OF / STUDENT_OF
+│   ├── Sư phụ → STUDENT_OF
+│   └── Đồ đệ → MENTOR_OF
+├── QUAN HỆ CHÍNH TRỊ/QUÂN SỰ:
+│   ├── Tiền nhiệm → PREDECESSOR_OF / SUCCEEDED
+│   ├── Kế nhiệm → SUCCEEDED / PREDECESSOR_OF
+│   ├── Cộng sự → ALLY_OF
+│   ├── Đối thủ/Kẻ thù → ENEMY_OF / RIVAL_OF
+│   ├── Tham mưu → ADVISOR_TO
+│   ├── Tướng lĩnh dưới quyền → COMMANDED / COMMANDED_BY
+│   ├── Bộ trưởng → APPOINTED / APPOINTED_BY
+│   └── Quan lại → GOVERNED / GOVERNED_BY
+├── VAI TRÒ/CHỨC VỤ:
+│   ├── Chức vụ → SERVED_AS
+│   ├── Triều đại → RULED_DURING / SERVED_DURING
+│   └── Cấp bậc quân đội → RANK_OF
+├── GIÁO DỤC:
+│   ├── Học tại → STUDIED_AT
+│   ├── Đỗ đạt → PASSED_EXAM
+│   └── Trường học → location của STUDIED_AT
+└── TÍNH CÁCH/SỞ TRƯỜNG:
+    └── Tính cách nổi bật → PERSONALITY_TRAIT
+    └── Kỹ năng → SKILL_OF
 
-**LOẠI 1: NGƯỜI (Person)**
-├── Tên chính + Các tên khác (bí danh, tên lúc sinh, tước vị)
-│   └── HAS_NAME → Name (birth_name, reign_name, title, alias, nickname)
-├── Quan hệ gia đình:
-│   └── PARENT_OF, CHILD_OF, SPOUSE_OF, SIBLING_OF
-├── Quan hệ thầy-trò:
-│   └── MENTOR_OF, STUDENT_OF, TAUGHT_BY
-├── Quan hệ chính trị/quân sự:
-│   └── SUCCEEDED, PREDECESSOR_OF, ADVISOR_TO, ALLY_OF, ENEMY_OF
-├── Vai trò:
-│   └── SERVED_AS → Role (vua, thủ tướng, tướng lĩnh...)
-└── Nơi sinh/nơi mất:
-    └── BORN_IN, DIED_AT → Location
-
-**LOẠI 2: SỰ KIỆN (Event)**
-├── Sự kiện chính trị (đăng quang, thoái vị, cải cách...)
-│   └── Người thực hiện → PERFORMED
-├── Sự kiện quân sự (chiến tranh, trận đánh, chiến thắng...)
-│   └── Người tham gia → PARTICIPATED_IN, COMMANDED, DEFEATED
-├── Sự kiện ngoại giao (ký kết, hiệp ước...)
-│   └── Người ký → SIGNED
-├── Sự kiện cá nhân (sinh, mất, kết hôn...)
-│   └── Người liên quan → OCCURRED_AT, STARTED, ENDED
-└── Địa điểm sự kiện:
+==============================================================
+LOẠI 2: SỰ KIỆN (Event) - TẠO NODE CHO MỌI SỰ KIỆN
+==============================================================
+├── SỰ KIỆN CHÍNH TRỊ:
+│   ├── Đăng quang/Ngày lên ngôi → CORONATION_OF
+│   ├── Thoái vị → ABDICATED
+│   ├── Cải cách, Đổi mới → INITIATED
+│   ├── Xử tử, Giết → EXECUTED / ASSASSINATED
+│   ├── Tha bổng, Giải thoát → RELEASED
+│   └── Lưu đày, Truyền bá → EXILED
+├── SỰ KIỆN QUÂN SỰ:
+│   ├── Trận đánh/Chiến trận → BATTLE_OF / PARTICIPATED_IN
+│   ├── Chiến thắng → VICTORY_IN / DEFEATED
+│   ├── Thua trận → DEFEAT_IN
+│   ├── Bị bao vây → SIEGE_OF
+│   ├── Bắt giữ → CAPTURED / CAPTURED_BY
+│   ├── Quân đội tham gia → ARMED_FORCES_IN
+│   └── Chiến dịch → LED_CAMPAIGN
+├── SỰ KIỆN NGOẠI GIAO:
+│   ├── Ký hiệp ước → SIGNED_TREATY
+│   ├── Công du → STATE_VISIT
+│   ├── Liên minh → FORMED_ALLIANCE
+│   └── Đàm phán → NEGOTIATED
+├── SỰ KIỆN VĂN HÓA/XÃ HỘI:
+│   ├── Xây dựng công trình → CONSTRUCTED
+│   ├── Sáng tác tác phẩm → CREATED
+│   ├── Tổ chức hội nghị → HOSTED
+│   └── Cải cách xã hội → REFORMED
+├── SỰ KIỆN CÁ NHÂN:
+│   ├── Sinh → BORN_AT
+│   ├── Mất → DIED_AT
+│   ├── Kết hôn → MARRIED_TO
+│   ├── Lập gia đình → FOUNDED_FAMILY
+│   └── Qua đời tại → DIED_IN
+├── THỜI GIAN SỰ KIỆN:
+│   ├── Năm cụ thể → OCCURRED_IN (properties: year)
+│   ├── Tháng/Ngày → OCCURRED_ON (properties: date)
+│   └── Thời kỳ → OCCURRED_DURING
+└── ĐỊA ĐIỂM:
     └── LOCATED_AT → Location
 
-**LOẠI 3: THỜI KỲ/ TRIỀU ĐẠI (Era/Dynasty)**
-├── Triều đại
-│   └── Người trị vì → RULED_DURING
-├── Thời kỳ lịch sử
-│   └── Người hoạt động → ACTIVE_DURING
-└── Năm/thập niên
-    └── ACTIVE_IN, REIGNED_IN
+==============================================================
+LOẠI 3: TRIỀU ĐẠI/THỜI KỲ (Era/Dynasty)
+==============================================================
+├── Triều đại → RULING_DYNASTY / RULED_BY
+├── Thời kỳ lịch sử → HISTORICAL_PERIOD
+├── Kỷ nguyên → ERA
+├── Thế kỷ → CENTURY
+├── Năm → properties: year
+└── Mối quan hệ:
+    ├── Người trị vì → RULED_DURING
+    ├── Người sáng lập → FOUNDED
+    └── Người khai sáng → ESTABLISHED
 
-**LOẠI 4: TỔ CHỨC/ĐOÀN THỂ**
-├── Thành lập
-│   └── Người sáng lập → FOUNDED
-├── Tham gia/làm việc
-│   └── Người → MEMBER_OF, EMPLOYED_AT, LED_BY
-└── Vai trò trong tổ chức
-    └── POSITION_HELD → Organization
+==============================================================
+LOẠI 4: TỔ CHỨC/ĐOÀN THỂ (Organization)
+==============================================================
+├── Tổ chức chính trị:
+│   ├── Đảng → MEMBER_OF / LED_BY / FOUNDED
+│   ├── Nhà nước → HEAD_OF / GOVERNED_BY
+│   └── Triều đình → SERVED_IN / RULED_BY
+├── Tổ chức quân sự:
+│   ├── Quân đội → SERVED_IN / COMMANDED
+│   ├── Quân chủng → BELONGED_TO
+│   └── Lực lượng vũ trang → ARMED_FORCE_OF
+├── Tổ chức tôn giáo:
+│   ├── Giáo hội → MEMBER_OF
+│   ├── Chùa/Tu viện → FOUNDED / LED_BY
+│   └── Tăng sĩ → ORDAINED_BY
+├── Tổ chức kinh tế:
+│   ├── Công ty → FOUNDED / EMPLOYED_AT
+│   └── Thương hội → MEMBER_OF
+└── VAI TRÒ TRONG TỔ CHỨC:
+    ├── Chủ tịch/Trưởng → LED_BY / HEAD_OF
+    ├── Thành viên → MEMBER_OF
+    ├── Sáng lập → FOUNDED_BY
+    └── Nhân viên → EMPLOYED_AT
 
-**LOẠI 5: ĐỊA ĐIỂM (Location)**
-├── Quê quán
-│   └── Người → FROM_PLACE, BORN_IN
-├── Nơi mất
-│   └── Người → DIED_AT
-├── Nơi cư trú/học tập
-│   └── Người → RESIDED_IN, STUDIED_AT
-└── Địa danh trong sự kiện
+==============================================================
+LOẠI 5: ĐỊA ĐIỂM (Location)
+==============================================================
+├── QUỐC GIA/VÙNG LÃNH THỔ:
+│   └── Quốc gia → FROM_COUNTRY / RULED
+├── TỈNH/THÀNH PHỐ:
+│   ├── Tỉnh → FROM_PROVINCE / GOVERNED
+│   └── Thành phố → FROM_CITY / GOVERNED
+├── QUÊ QUÁN/NƠI SINH:
+│   └── Người → BORN_IN / FROM_PLACE
+├── NƠI MẤT:
+│   └── Người → DIED_AT / DIED_IN
+├── NƠI CƯ TRÚ:
+│   ├── Cư trú → RESIDED_IN
+│   ├── Học tập → STUDIED_AT
+│   └── Làm việc → WORKED_AT
+├── ĐỊA DANH LỊCH SỬ:
+│   ├── Thành trì → LOCATED_AT
+│   ├── Pháo đài → FORTIFIED
+│   ├── Cung điện → LOCATED_AT / CONSTRUCTED
+│   └── Di tích → HISTORICAL_SITE
+├── ĐỊA HÌNH:
+│   ├── Sông → LOCATED_AT
+│   ├── Núi → LOCATED_AT
+│   ├── Biển → LOCATED_AT
+│   └── Rừng → LOCATED_AT
+└── ĐỊA ĐIỂM TRONG SỰ KIỆN:
     └── Sự kiện → LOCATED_AT
 
-**LOẠI 6: THÀNH TỰU/GIẢI THƯỞNG (Achievement)**
-├── Thành tựu chính
-│   └── Người đạt được → ACHIEVED
-├── Giải thưởng
-│   └── Người nhận → RECEIVED_AWARD
-└── Công trình sáng tạo
-    └── Người tạo → CREATED
-
-**LOẠI 7: TÁC PHẨM/VĂN HÓA (Work)**
-├── Sách, bài viết
-│   └── Tác giả → AUTHORED
-├── Nghệ thuật
-│   └── Nghệ sĩ → CREATED
-└── Phát minh
-    └── Người phát minh → INVENTED
-
-**LOẠI 8: KHÁI NIỆM/LĨNH VỰC (Field)**
-├── Lĩnh vực hoạt động
-│   └── Người → EXPERT_IN, WORKED_IN
-└── Trường phái
-    └── Người → BELONGED_TO
+==============================================================
+LOẠI 6: THÀNH TỰU/THÀNH TÍCH (Achievement)
+==============================================================
+├── THÀNH TỰU CHÍNH:
+│   ├── Thành tựu quân sự → ACHIEVED_VICTORY
+│   ├── Thành tựu chính trị → ACHIEVED_POLITICALLY
+│   ├── Thành tựu văn hóa → ACHIEVED_CULTURALLY
+│   └── Thành tựu kinh tế → ACHIEVED_ECONOMICALLY
+├── GIẢI THƯỞNG/DANH HIỆU:
+│   ├── Tước vị → RECEIVED_TITLE
+│   ├── Phong tặng → GRANTED_TITLE
+│   ├── Giải thưởng → RECEIVED_AWARD
+│   └── Vinh danh → HONORED_WITH
+├── CÔNG TRÌNH XÂY DỰNG:
+│   ├── Công trình kiến trúc → BUILT / CONSTRUCTED
+│   ├── Đập, kênh → BUILT
+│   └── Thành, lũy → BUILT / FORTIFIED
+├── SÁNG TÁC:
+│   ├── Tác phẩm văn học → AUTHORED
+│   ├── Nhạc phẩm → COMPOSED
+│   ├── Tranh ảnh → CREATED
+│   └── Phát minh → INVENTED
+└── TÍNH CÁCH NỔI BẬT:
+    └── Thuộc tính đặc biệt → HAS_TRAIT
 
 ==============================================================
-VÍ DỤ MINH HỌA (QUAN TRỌNG!)
+LOẠI 7: TÁC PHẨM/VĂN HÓA VẬT THỂ (Work)
+==============================================================
+├── VĂN HỌC:
+│   ├── Sách → AUTHORED
+│   ├── Bài viết → WROTE
+│   ├── Thơ → COMPOSED
+│   ├── Văn bia → INSCRIBED
+│   └── Châu bản → COMPILED
+├── NGHỆ THUẬT:
+│   ├── Tranh → PAINTED / CREATED
+│   ├── Tượng → SCULPTED
+│   ├── Kiến trúc → DESIGNED / BUILT
+│   └── Nghệ thuật thủ công → CRAFTED
+├── ÂM NHẠC:
+│   ├── Nhạc phẩm → COMPOSED
+│   └── Ca khúc → COMPOSED
+├── PHÁT MINH/SÁNG CHẾ:
+│   ├── Phát minh → INVENTED
+│   ├── Cải tiến → IMPROVED
+│   └── Kỹ thuật → DEVELOPED
+└── NGỮ LIỆU LỊCH SỬ:
+    ├── Biên niên sử → COMPILED
+    └── Chính sử → AUTHORED
+
+==============================================================
+LOẠI 8: KHÁI NIỆM/LĨNH VỰC (Field/Concept)
+==============================================================
+├── LĨNH VỰC HOẠT ĐỘNG:
+│   ├── Quân sự → EXPERT_IN_MILITARY / WORKED_IN
+│   ├── Chính trị → EXPERT_IN_POLITICS / WORKED_IN
+│   ├── Văn hóa → EXPERT_IN_CULTURE / WORKED_IN
+│   ├── Kinh tế → EXPERT_IN_ECONOMICS / WORKED_IN
+│   ├── Tôn giáo → EXPERT_IN_RELIGION / WORKED_IN
+│   └── Ngoại giao → EXPERT_IN_DIPLOMACY / WORKED_IN
+├── TRƯỜNG PHÁI:
+│   ├── Trường phái tư tưởng → BELONGED_TO
+│   ├── Trường phái nghệ thuật → BELONGED_TO
+│   └── Trường phái quân sự → BELONGED_TO
+├── CHÍNH SÁCH/QUAN ĐIỂM:
+│   ├── Chính sách → IMPLEMENTED_POLICY
+│   └── Quan điểm → HELD_VIEW
+└── HỌC THUYẾT/LÝ THUYẾT:
+    ├── Học thuyết → PROPOUNDED
+    └── Lý thuyết → DEVELOPED
+
+==============================================================
+LOẠI 9: VĂN BẢN/TÀI LIỆU (Document)
+==============================================================
+├── Văn bản pháp luật:
+│   ├── Luật → PROMULGATED
+│   ├── Chiếu → DECREED
+│   └── Sắc lệnh → DECREED
+├── Văn bản ngoại giao:
+│   ├── Hiệp ước → SIGNED
+│   ├── Thư tín → CORRESPONDED
+│   └── Tuyên ngôn → DECLARED
+├── Văn bản văn học:
+│   ├── Tác phẩm → AUTHORED
+│   └── Bản thảo → WROTE
+└── TÀI LIỆU LỊCH SỬ:
+    └── Biên bản → RECORDED
+
+==============================================================
+LOẠI 10: QUÂN ĐỘI/VŨ KHÍ (Military)
+==============================================================
+├── QUÂN ĐỘI:
+│   ├── Quân đội chính quy → LED / COMMANDED
+│   ├── Quân chủng → COMMANDED
+│   └── Lực lượng đặc biệt → LED
+├── VŨ KHÍ/TRANG BỊ:
+│   ├── Vũ khí → INVENTED / USED_WEAPON
+│   └── Phương tiện → DEVELOPED
+└── CHIẾN THUẬT/CHIẾN LƯỢC:
+    ├── Chiến thuật → DEPLOYED_TACTIC
+    └── Chiến lược → DEVISED_STRATEGY
+
+==============================================================
+VÍ DỤ MINH HỌA (TẠO TỐI ĐA NODES)
 ==============================================================
 
-Input: "Bảo Đại, tên thật Nguyễn Phúc Vĩnh San, sinh năm 1913 tại Huế, là vua cuối cùng của Việt Nam. Ông đăng quang năm 1926 tại Đại Nội Huế. Năm 1945, ông thoái vị. Vợ ông là Nam Phương hoàng hậu."
+Input: "Bảo Đại (1913-1997), tên khai sinh Nguyễn Phúc Vĩnh San, quê ở Huế, là vị Hoàng đế cuối cùng của Việt Nam thuộc Nhà Nguyễn. Năm 1926, ông đăng quang tại Đại Nội Huế. Năm 1945, ông thoái vị dưới áp lực của Cách mạng. Vợ ông là Nam Phương hoàng hậu. Ông là con trai của vua Khải Định. Chú ông là Hoàng Tường, em vua Khải Định."
 
-Output ĐÚNG:
+Output ĐÚNG (tạo TỐI ĐA nodes):
 ```json
 {{
   "nodes": [
-    {{"id": "p1", "type": "Person", "name": "Bảo Đại", "properties": {{"title": "Vua cuối cùng Việt Nam"}}}},
-    {{"id": "n1", "type": "Name", "name": "Nguyễn Phúc Vĩnh San", "properties": {{"name_type": "birth_name"}}}},
-    {{"id": "l1", "type": "Location", "name": "Huế", "properties": {{"description": "Thành phố Huế"}}}},
-    {{"id": "l2", "type": "Location", "name": "Đại Nội Huế", "properties": {{"description": "Hoàng cung Huế"}}}},
-    {{"id": "e1", "type": "Event", "name": "Đăng quang năm 1926", "properties": {{"year": 1926}}}},
-    {{"id": "e2", "type": "Event", "name": "Thoái vị năm 1945", "properties": {{"year": 1945}}}},
-    {{"id": "p2", "type": "Person", "name": "Nam Phương hoàng hậu", "properties": {{"title": "Vợ vua Bảo Đại"}}}}
+    {{"id": "p1", "type": "Person", "name": "Bảo Đại", "properties": {{"title": "Hoàng đế cuối cùng Việt Nam", "birth_year": 1913, "death_year": 1997, "notes": "Nhà Nguyễn"}}}},
+    {{"id": "n1", "type": "Name", "name": "Nguyễn Phúc Vĩnh San", "properties": {{"name_type": "khai_sinh"}}}},
+    {{"id": "n2", "type": "Name", "name": "Hoàng đế", "properties": {{"name_type": "tước_vị"}}}},
+    {{"id": "l1", "type": "Location", "name": "Huế", "properties": {{"type": "quê_quán", "description": "Thành phố Huế"}}}},
+    {{"id": "l2", "type": "Location", "name": "Đại Nội Huế", "properties": {{"type": "cung_điện", "description": "Hoàng cung Huế"}}}},
+    {{"id": "l3", "type": "Location", "name": "Việt Nam", "properties": {{"type": "quốc_gia"}}}},
+    {{"id": "dy1", "type": "Dynasty", "name": "Nhà Nguyễn", "properties": {{"period": "1802-1945"}}}},
+
+    {{"id": "e1", "type": "Event", "name": "Đăng quang Bảo Đại 1926", "properties": {{"year": 1926, "type": "đăng_quang"}}}},
+    {{"id": "e2", "type": "Event", "name": "Thoái vị Bảo Đại 1945", "properties": {{"year": 1945, "type": "thoái_vị"}}}},
+    {{"id": "e3", "type": "Event", "name": "Cách mạng tháng Tám 1945", "properties": {{"year": 1945}}}},
+
+    {{"id": "p2", "type": "Person", "name": "Nam Phương hoàng hậu", "properties": {{"title": "Hoàng hậu", "role": "vợ vua Bảo Đại"}}}},
+    {{"id": "p3", "type": "Person", "name": "Khải Định", "properties": {{"title": "Vua", "dynasty": "Nhà Nguyễn"}}}},
+    {{"id": "p4", "type": "Person", "name": "Hoàng Tường", "properties": {{"title": "Hoàng tử", "relation": "chú Bảo Đại"}}}}
   ],
   "relationships": [
-    {{"from": "p1", "type": "HAS_NAME", "to": "n1", "properties": {{"name_type": "birth_name"}}}},
+    {{"from": "p1", "type": "HAS_NAME", "to": "n1", "properties": {{"name_type": "khai_sinh"}}}},
+    {{"from": "p1", "type": "HAS_NAME", "to": "n2", "properties": {{"name_type": "tước_vị"}}}},
     {{"from": "p1", "type": "BORN_IN", "to": "l1", "properties": {{"year": 1913}}}},
+    {{"from": "p1", "type": "FROM_PLACE", "to": "l1"}},
+    {{"from": "p1", "type": "RULED", "to": "l3"}},
+    {{"from": "p1", "type": "RULED_DURING", "to": "dy1"}},
+    {{"from": "p3", "type": "PARENT_OF", "to": "p1"}},
+    {{"from": "p1", "type": "CHILD_OF", "to": "p3"}},
+    {{"from": "p4", "type": "SIBLING_OF", "to": "p3"}},
+    {{"from": "p1", "type": "SPOUSE_OF", "to": "p2"}},
     {{"from": "e1", "type": "LOCATED_AT", "to": "l2"}},
+    {{"from": "e1", "type": "OCCURRED_IN", "to": "l2", "properties": {{"year": 1926}}}},
     {{"from": "p1", "type": "PERFORMED", "to": "e1"}},
     {{"from": "p1", "type": "PERFORMED", "to": "e2"}},
-    {{"from": "p1", "type": "SPOUSE_OF", "to": "p2"}}
-  ]
-}}
-```
-
-Input: "Trần Hưng Đạo là con trai Trần Thánh Đạo, nổi tiếng với chiến thắng Bạch Đằng 1288 chống quân Nguyên. Ông được phong làm Đại Hành Hiếu Hoàng Đế."
-
-Output ĐÚNG:
-```json
-{{
-  "nodes": [
-    {{"id": "p1", "type": "Person", "name": "Trần Hưng Đạo", "properties": {{"title": "Đại Hành Hiếu Hoàng Đế"}}}},
-    {{"id": "p2", "type": "Person", "name": "Trần Thánh Đạo", "properties": {{"relation": "Cha của Trần Hưng Đạo"}}}},
-    {{"id": "e1", "type": "Event", "name": "Chiến thắng Bạch Đằng 1288", "properties": {{"year": 1288, "description": "Chống quân Nguyên"}}}},
-    {{"id": "l1", "type": "Location", "name": "Sông Bạch Đằng", "properties": {{"description": "Địa điểm trận đánh"}}}}
-  ],
-  "relationships": [
-    {{"from": "p1", "type": "CHILD_OF", "to": "p2"}},
-    {{"from": "p1", "type": "PARTICIPATED_IN", "to": "e1"}},
-    {{"from": "p1", "type": "COMMANDED", "to": "e1"}},
-    {{"from": "e1", "type": "LOCATED_AT", "to": "l1"}},
-    {{"from": "p1", "type": "RECEIVED_TITLE", "to": "e1", "properties": {{"title": "Đại Hành Hiếu Hoàng Đế"}}}}
+    {{"from": "e3", "type": "CAUSED", "to": "e2"}},
+    {{"from": "e2", "type": "OCCURRED_IN", "to": "l3", "properties": {{"year": 1945}}}}
   ]
 }}
 ```
 
 ==============================================================
-THỰC HÀNH
+THỰC HÀNH - ĐOẠN VĂN CẦN PHÂN TÍCH
 ==============================================================
 
-Đoạn văn cần phân tích:
 {{text}}
 
-YÊU CẦU QUAN TRỌNG:
-- MỖI node phải có ÍT NHẤT 1 relationship đến node khác
-- Nếu node "tên" (Name) → PHẢI có relationship HAS_NAME đến Person
-- Nếu node "sự kiện" → PHẢI có relationship đến người tham gia/thực hiện
-- Nếu node "địa điểm" → PHẢI có relationship đến người hoặc sự kiện
-- KHÔNG tạo node "treo lơ lửng" không kết nối gì
+==============================================================
+YÊU CẦU BẮT BUỘC:
+==============================================================
+1. TRÍCH XUẤT TỐI ĐA - Tạo node cho MỌI thứ được nhắc đến
+2. MỖI node phải có ÍT NHẤT 1 relationship
+3. Tạo biến thể tên cho MỌI người (tên chính, tên khai sinh, tước vị...)
+4. Tạo node Event cho MỌI sự kiện có năm/thời gian
+5. Tạo node Location cho MỌI địa điểm được nhắc
+6. Nếu có quan hệ gia đình → tạo relationship GIA ĐÌNH
+7. KHÔNG có node "treo lơ lửng" không kết nối
+8. Thêm properties year, date, description nếu có trong văn bản
 
-Output JSON:
+Output JSON (CHỈ JSON, KHÔNG text khác):
 {{
     "nodes": [...],
     "relationships": [...]
 }}
-
-CHỈ TRẢ VỀ JSON, KHÔNG CÓ TEXT KHÁC.
 """
 
 
