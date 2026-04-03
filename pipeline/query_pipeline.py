@@ -422,46 +422,58 @@ class QueryPipeline:
         return expanded
 
     def _extract_entity(self, question: str) -> str:
-        """Trích xuất entity từ câu hỏi."""
-        # === FIX: Ưu tiên PATTERN TRƯỚC ===
-        # Patterns để trích xuất entity
+        """Trích xuất entity từ câu hỏi - XỬ LÝ NHIỀU DẠNG."""
+        # === CÁC PATTERN theo thứ tự ưu tiên ===
         patterns = [
-            r'(?:của|tên|ai là|gì là)\s+(.+?)(?:\?|$)',  # "tên của X", "X là ai"
-            r'^(.+?)(?:\s+là\s+ai|\s+là\s+gì|\s+ở\s+đâu)',  # "X là ai"
-            r'\"(.+?)\"',  # "X"
+            # 1. "tên/của X?" - "tên thật của Bảo Đại?"
+            (r'(?:tên|của|ai là|gì là)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\?|$)', 1),
+            # 2. "X là ai/gì/ở đâu" - "Bảo Đại là ai?"
+            (r'^([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+là\s+ai|\s+là\s+gì|\s+ở\s+đâu)', 1),
+            # 3. "X?" - standalone name at start
+            (r'^([A-ZÀ-ỹ][a-zà-ỹ]{2,})(?:\s+|$|\?)', 1),
+            # 4. "Sau khi [event], X [verb]" - "Sau khi thoái vị, Bảo Đại giữ..."
+            (r',?\s*([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:giữ|làm|được|đóng|là|có|ở|sống|mất|năm|nơi|được\s+tổ))', 1),
+            # 5. "trong/cho/với X" - "trong Chính phủ VNDCCH"
+            (r'(?:trong|cho|với)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s|$|\?)', 1),
+            # 6. "năm 1945, X" - "năm 1945, Bảo Đại"
+            (r',\s*([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:giữ|làm|được|đóng|là|có))', 1),
         ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, question)
+
+        for pattern, group in patterns:
+            match = re.search(pattern, question, re.IGNORECASE)
             if match:
-                extracted = match.group(1).strip()
-                # Nếu extracted có "sinh/mất/lên ngôi" → loại bỏ
-                temporal_suffixes = ["sinh", "mất", "đăng", "lên ngôi", "thoái vị", "năm nào", "lúc nào"]
+                extracted = match.group(group).strip()
+                # Loại bỏ temporal suffixes
+                temporal_suffixes = ["sinh", "mất", "đăng", "lên ngôi", "thoái vị", "năm nào", "lúc nào", "ra sao"]
                 for suffix in temporal_suffixes:
                     if extracted.lower().endswith(suffix):
                         extracted = extracted[:-len(suffix)].strip()
-                if extracted:
-                    return extracted
-        
-        # === Nếu không có pattern, dùng word segmentation ===
+                # Loại bỏ từ không phải tên
+                stopwords = {"ai", "gì", "ở", "đâu", "nào", "chính", "phủ", "việt", "nam", "dân", "chủ", "cộng", "hòa", "vai", "trò", "sau", "khi", "trong", "cho", "với", "năm", "tháng", "ngày", "lời", "bài"}
+                words = extracted.split()
+                cleaned = " ".join(w for w in words if w.lower() not in stopwords)
+                if cleaned and len(cleaned) > 2:
+                    return cleaned
+
+        # === Fallback: Word segmentation lấy tên riêng ===
         if WORD_SEG_AVAILABLE:
             words = underthesea.word_tokenize(question)
             entity_words = []
+            stopwords = {"sinh", "mất", "năm", "lên", "đăng", "ngày", "tháng", "lúc", "thôi", "là", "ai", "gì", "ở", "đâu", "của", "sau", "khi", "trong", "vai", "trò", "giữ", "được", "chính", "phủ", "việt", "nam", "dân", "chủ", "cộng", "hòa", "?"}
             for w in words:
-                # Skip các từ temporal
-                if w.lower() in ["sinh", "mất", "năm", "lên", "đăng", "ngày", "tháng", "lúc", "thôi", "là", "ai", "gì", "ở", "đâu", "của", "?"]:
+                if w.lower() in stopwords:
                     continue
                 if w[0].isupper() if w else False:
                     entity_words.append(w)
             if entity_words:
-                return " ".join(entity_words)
-        
-        # Fallback: lấy từ đầu tiên là tên riêng
+                return " ".join(entity_words[:2])  # Lấy 1-2 từ đầu
+
+        # === Fallback cuối: lấy từ hoa đầu tiên ===
         words = question.split()
         for w in words:
             if w[0].isupper() if w else False:
                 return w
-        
+
         return question.strip().rstrip("?").strip()
 
     def _extract_keywords(self, question: str) -> List[str]:
@@ -1363,9 +1375,9 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
 
     def _filter_context(self, query_info: Dict, candidates: List[Dict]) -> str:
         """
-        LLM filter context - CHỈ chọn thông tin liên quan từ candidates.
+        LLM filter context - GỬI TẤT CẢ context để tránh hallucination.
         
-        FIX: Cải thiện prompt để LLM hiểu rõ hơn về context.
+        FIX: Không filter quá mức, gửi hết context cho answer generation.
         """
         if not candidates:
             return ""
@@ -1373,25 +1385,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         entity = query_info.get("entity", "")
         intent = query_info.get("intent", "")
         
-        # === FIX: Kiểm tra xem entity có trong candidates không ===
-        entity_in_candidates = False
-        for c in candidates:
-            cname = c.get("name", "").lower()
-            all_names = c.get("all_names", [])
-            if (cname and entity.lower() in cname) or any(entity.lower() in n.get("value", "").lower() for n in all_names):
-                entity_in_candidates = True
-                break
-        
-        # === FIX: Tìm và hiển thị entity chính trong debug ===
-        main_entity_in_context = None
-        for c in candidates:
-            cname = c.get("name", "").lower()
-            all_names = c.get("all_names", [])
-            if (cname and entity.lower() in cname) or any(entity.lower() in n.get("value", "").lower() for n in all_names):
-                main_entity_in_context = c
-                break
-        
-        # Format candidates thành text - ƯU TIÊN main entity lên đầu
+        # Format candidates thành text
         context_text = self._format_candidates(candidates, main_entity_name=entity)
         
         # DEBUG: Print context trước khi gửi cho LLM
@@ -1399,73 +1393,14 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         print(f"  Entity: {entity}")
         print(f"  Intent: {intent}")
         print(f"  Total candidates: {len(candidates)}")
-        print(f"  Entity in candidates: {'YES' if entity_in_candidates else 'NO'}")
+        print(f"  [DEBUG] Raw context length: {len(context_text)} chars")
+
+        # FIX: GỬI TẤT CẢ CONTEXT - không filter
+        # LLM filter không cần thiết và gây ra hallucination
+        # Trả về toàn bộ context để answer generation tự tìm thông tin
         
-        if main_entity_in_context:
-            print(f"  [MAIN ENTITY CONTEXT]:")
-            print(f"    Name: {main_entity_in_context.get('name')}")
-            print(f"    Type: {main_entity_in_context.get('type')}")
-            print(f"    Birth: {main_entity_in_context.get('birth_year', 'N/A')}")
-            print(f"    Death: {main_entity_in_context.get('death_year', 'N/A')}")
-            all_names = main_entity_in_context.get("all_names", [])
-            if all_names:
-                print(f"    Names: {[n.get('value') for n in all_names[:5]]}")
-        
-        print(f"  [DEBUG] Context preview (first 500 chars):")
-        print(f"  {context_text[:500] if context_text else 'EMPTY'}")
-
-        # === FIX: Cải thiện prompt - KHÔNG loại bỏ context quá mức ===
-        prompt = f"""Bạn là trợ lý RAG - CHỌN thông tin liên quan từ context.
-
-CÂU HỎI: {query_info['original_question']}
-ENTITY CẦN TÌM: "{entity}"
-INTENT: {intent}
-
-CONTEXT (từ database - BAO GỒM TẤT CẢ properties):
-{context_text}
-
-=== SỐ THỨ TỰ HOÀNG ĐẾ ===
-Nếu câu hỏi hỏi "thứ mấy" hoặc "thứ bao nhiêu":
-- Đọc SỐ LA MÃ: I=1, II=2, III=3, IV=4, V=5, VI=6, VII=7, VIII=8, IX=9, X=10, XI=11, XII=12, XIII=13, XIV=14, XV=15
-- Đọc SỐ Ả RẬP: 1=1, 2=2, 3=3, 4=4, 5=5, 6=6, 7=7, 8=8, 9=9, 10=10, 11=11, 12=12, 13=13, 14=14, 15=15
-- Đọc CHỮ: một/một=1, hai=2, ba=3, bốn=4, năm=5, sáu=6, bảy=7, tám=8, chín=9, mười=10, mười một=11, mười hai=12, mười ba=13
-
-NHIỆM VỤ:
-1. Tìm thông tin về "{entity}" trong context
-2. ĐẶC BIỆT QUAN TRỌNG - TÌM NGÀY/THÁNG/NĂM trong Related nodes:
-   - "Sinh", "Mất", "Đăng quang", "Thoái vị" có thể có properties: year, month, date, age
-   - Ví dụ: "Mất" có thể có year="1997", month="Tháng 7", age="84"
-3. Nếu câu hỏi hỏi "sinh năm/ngày sinh" → Tìm birth_date, birth_year HOẶC related "Sinh" có year
-4. Nếu câu hỏi hỏi "mất năm/ngày mất" → Tìm death_date, death_year HOẶC related "Mất" có year
-5. Nếu câu hỏi hỏi "tên thật/birth_name" → Tìm Name nodes có name_type = "birth_name"
-6. Nếu câu hỏi hỏi "lên ngôi/đăng quang" → Tìm reign_start_date, reign_year HOẶC related "Đăng quang" có year
-7. Nếu câu hỏi "X là ai?" → Lấy thông tin cơ bản về X
-
-QUY TẮC QUAN TRỌNG:
-- Tìm THẤY thì TRẢ VỀ TẤT CẢ thông tin liên quan (KHÔNG bỏ qua)
-- LUÔN xem Related nodes - đây thường chứa thông tin quan trọng (year, month, age)
-- Nếu Related có "Mất" với year, đây là năm mất
-- Nếu Related có "Sinh" với year, đây là năm sinh
-- Trả về TẤT CẢ thông tin tìm được, KHÔNG cắt ngắn
-
-TRẢ VỀ: Tất cả thông tin liên quan đến câu hỏi, bao gồm cả Related nodes."""
-
-        # === FIX: Debug response từ LLM filter ===
-        try:
-            response = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=0.1)
-            print(f"  [DEBUG] LLM filter response (first 300 chars): {response[:300] if response else 'EMPTY'}")
-            
-            # Kiểm tra nếu LLM nói không đủ dữ liệu
-            if "KHÔNG ĐỦ DỮ LIỆU" in response.upper() or len(response.strip()) < 20:
-                print(f"  [WARNING] LLM returned minimal/empty response")
-                # FIX: Fallback - trả về raw context thay vì empty
-                # Vì có thể LLM filter đã loại bỏ thông tin quan trọng
-                return context_text[:2000]  # Return first 2000 chars of raw context
-            
-            return response.strip()
-        except Exception as e:
-            print(f"❌ Lỗi filter context: {e}")
-            return context_text  # Fallback: return unfiltered
+        print(f"  [DEBUG] Sending FULL context to answer generation (no LLM filter)")
+        return context_text
 
     def _format_candidates(self, candidates: List[Dict], main_entity_name: str = None) -> str:
         """Format candidates thành text readable - ƯU TIÊN main entity."""

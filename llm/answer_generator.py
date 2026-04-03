@@ -6,18 +6,30 @@ from .prompt_templates import ANSWER_PROMPT, CONTEXT_SYNTHESIS_PROMPT
 
 
 # Prompt gộp - vừa trích xuất intent vừa trả lời
-COMBINED_PROMPT = """Dựa vào câu hỏi và context từ graph, trả lời bằng tiếng Việt.
+COMBINED_PROMPT = """Dựa vào câu hỏi và context từ graph, trả lời bằng TIẾNG VIỆT 100%.
 
 Câu hỏi: {question}
 
 Context từ graph:
 {context}
 
-Hướng dẫn:
-- Đọc câu hỏi để hiểu người dùng muốn hỏi gì
-- Tìm thông tin liên quan trong context
-- Trả lời ngắn gọn, chính xác bằng tiếng Việt
-- Nếu context không có thông tin cần thiết, trả lời: "Không có thông tin về vấn đề này."
+=== QUY TẮC QUAN TRỌNG - ĐỌC KỸ ===
+1. TRẢ LỜI BẰNG TIẾNG VIỆT 100% - KHÔNG dùng tiếng Anh trong câu trả lời
+2. NẾU cần nhắc đến relationship (quan hệ) → CHỈ dùng khi câu hỏi hỏi về "quan hệ", "liên hệ", "mối quan hệ", "relationship"
+   - Khi cần nói relationship: dùng tiếng Việt như "là con của", "là vua của", "tham gia", "sáng lập", "là tác giả của"
+3. TUYỆT ĐỐI KHÔNG tự bịa thông tin (không hallucination)
+4. Đọc TẤT CẢ properties và Related nodes để tìm thông tin
+5. NẾU context không có thông tin → nói rõ: "Không có thông tin trong dữ liệu về vấn đề này."
+
+Ví dụ:
+- Câu hỏi: "Nguyễn Trãi có vai trò gì trong khởi nghĩa Lam Sơn?"
+- Context có: Nguyễn Trãi tham gia khởi nghĩa Lam Sơn, soạn Bình Ngô đại cáo, là cố vấn của Lê Lợi
+- → Trả lời: "Nguyễn Trãi tham gia khởi nghĩa Lam Sơn với vai trò là cố vấn quân sự và ngoại giao cho Lê Lợi. Ông là người soạn thảo 'Bình Ngô đại cáo' - bản tuyên ngôn độc lập nổi tiếng, cùng nhiều tác phẩm văn học và quân sự khác."
+- → KHÔNG trả lời: "Nguyễn Trãi có PARTICIPATED_IN relationship với Lam Sơn"
+
+- Câu hỏi: "Tên thật của Bảo Đại là gì?"
+- Context có: birth_name: "Nguyễn Phúc Vĩnh San"
+- → Trả lời: "Tên khai sinh của Bảo Đại là Nguyễn Phúc Vĩnh San."
 
 Trả lời:"""
 
