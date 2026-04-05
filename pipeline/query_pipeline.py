@@ -101,6 +101,8 @@ class QueryPipeline:
         "thuộc": "BELONGS_TO",
         "con của": "PARENT_OF",
         "cha của": "PARENT_OF",
+        "kế nhiệm": "SUCCESSOR_OF",
+        "tiền nhiệm": "PREDECESSOR_OF",
         # Alias patterns
         "còn gọi": "alias",
         "cũng gọi": "alias",
@@ -181,6 +183,22 @@ class QueryPipeline:
         "thoái vị": "reign_end",
         "thôi ngôi": "reign_end",
         "mất ngôi": "reign_end",
+        # Successor/Predecessor
+        "kế nhiệm": "SUCCESSOR_OF",
+        "tiền nhiệm": "PREDECESSOR_OF",
+        # === FIX: Reign-related intents ===
+        "tại vị": "reign_duration",
+        "tại vị bao lâu": "reign_duration",
+        "tại vị bao nhiêu ngày": "reign_duration",
+        "tại vị bao nhiêu năm": "reign_duration",
+        "trị vì": "reign_duration",
+        "trị vì bao lâu": "reign_duration",
+        "trị vì bao nhiêu ngày": "reign_duration",
+        "trị vì bao nhiêu năm": "reign_duration",
+        "thời gian tại vị": "reign_duration",
+        "thời gian trị vì": "reign_duration",
+        "khoảng thời gian trị vì": "reign_duration",
+        "thời lượng trị vì": "reign_duration",
     }
 
     # Biến thể câu hỏi - synonym mapping (đồng nghĩa, cùng ý nghĩa)
@@ -429,19 +447,29 @@ class QueryPipeline:
         """Trích xuất entity từ câu hỏi - XỬ LÝ NHIỀU DẠNG."""
         # === CÁC PATTERN theo thứ tự ưu tiên ===
         patterns = [
-            # 1. "X là Y phải không?" - "Bảo Đại là vua cuối cùng của triều Nguyễn phải không?"
+            # 0. FIX: "Vua/Hoàng đế X Y?" - extract X (person name after title)
+            (r'(?:vua|hoàng\s+đế|thái\s+tử|vương|công|tước)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:tại|trị|sinh|mất|là|của|bao)|\?|$)', 1),
+            # 0.5. NEW: "việc X bị..." or "việc X được..." - catch mid-sentence person events
+            (r'việc\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:bị|được|lên|đổi|phế|thoái|qua|tịch))', 1),
+            # 0.7. NEW: "Sau khi/Khi X [verb]..." - temporal phrase with person
+            (r'(?:Sau khi|khi|Khi)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:thoái|đăng|lên|xuống|bị|được))', 1),
+            # 1. Relationship queries: "Người kế nhiệm/tiền nhiệm X là ai?" - ƯU TIÊN TRƯỚC
+            (r'người\s+(kế\s+nhiệm|tiền\s+nhiệm)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+là\s+ai)', 2),
+            # 2. "X là Y phải không?" - "Bảo Đại là vua cuối cùng của triều Nguyễn phải không?"
             (r'^([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+là\s+.+?phải\s+không)', 1),
-            # 2. "X là ai/gì/ở đâu" - "Bảo Đại là ai?"
+            # 3. "X là ai/gì/ở đâu" - "Bảo Đại là ai?"
             (r'^([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+là\s+ai|\s+là\s+gì|\s+ở\s+đâu)', 1),
-            # 3. "X?" - standalone name at start
+            # 3.5. NEW: "X được [verb]..." - handle "X được mệnh danh gì"
+            (r'\b([A-ZÀ-ỹ][a-zà-ỹ\s]*[A-ZÀ-ỹ])\s+(?:được|là|gọi|mệnh|đoạt)', 1),
+            # 4. "X?" - standalone name at start
             (r'^([A-ZÀ-ỹ][a-zà-ỹ]{2,})(?:\s+|$|\?)', 1),
-            # 4. "tên/của X?" - "tên thật của Bảo Đại?"
+            # 5. "tên/của X?" - "tên thật của Bảo Đại?"
             (r'(?:tên|của|ai là|gì là)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\?|$)', 1),
-            # 5. "Sau khi [event], X [verb]" - "Sau khi thoái vị, Bảo Đại giữ..."
+            # 6. "Sau khi [event], X [verb]" - "Sau khi thoái vị, Bảo Đại giữ..."
             (r',?\s*([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:giữ|làm|được|đóng|là|có|ở|sống|mất|năm|nơi|được\s+tổ))', 1),
-            # 6. "trong/cho/với X" - "trong Chính phủ VNDCCH"
+            # 7. "trong/cho/với X" - "trong Chính phủ VNDCCH"
             (r'(?:trong|cho|với)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s|$|\?)', 1),
-            # 7. "năm 1945, X" - "năm 1945, Bảo Đại"
+            # 8. "năm 1945, X" - "năm 1945, Bảo Đại"
             (r',\s*([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:giữ|làm|được|đóng|là|có))', 1),
         ]
 
@@ -455,17 +483,26 @@ class QueryPipeline:
                     if extracted.lower().endswith(suffix):
                         extracted = extracted[:-len(suffix)].strip()
                 # Loại bỏ từ không phải tên
-                stopwords = {"ai", "gì", "ở", "đâu", "nào", "chính", "phủ", "việt", "nam", "dân", "chủ", "cộng", "hòa", "vai", "trò", "sau", "khi", "trong", "cho", "với", "năm", "tháng", "ngày", "lời", "bài"}
+                stopwords = {"ai", "gì", "ở", "đâu", "nào", "chính", "phủ", "việt", "nam", "dân", "chủ", "cộng", "hòa", "vai", "trò", "sau", "khi", "trong", "cho", "với", "năm", "tháng", "ngày", "lời", "bài", "vua", "hoàng", "đế", "thái", "tử", "vương", "công", "tước", "được", "được"}
                 words = extracted.split()
                 cleaned = " ".join(w for w in words if w.lower() not in stopwords)
                 if cleaned and len(cleaned) > 2:
                     return cleaned
 
-        # === Fallback: Word segmentation lấy tên riêng ===
+        # === NEW FALLBACK 1: Search database for any known person name in question ===
+        # This catches cases like "việc Dục Đức bị phế truất" where patterns may not work
+        try:
+            all_names = self._find_person_names_in_question(question)
+            if all_names:
+                return all_names[0]  # Return best match
+        except Exception as e:
+            pass  # Fall through to next fallback
+
+        # === Fallback 2: Word segmentation lấy tên riêng ===
         if WORD_SEG_AVAILABLE:
             words = underthesea.word_tokenize(question)
             entity_words = []
-            stopwords = {"sinh", "mất", "năm", "lên", "đăng", "ngày", "tháng", "lúc", "thôi", "là", "ai", "gì", "ở", "đâu", "của", "sau", "khi", "trong", "vai", "trò", "giữ", "được", "chính", "phủ", "việt", "nam", "dân", "chủ", "cộng", "hòa", "?"}
+            stopwords = {"sinh", "mất", "năm", "lên", "đăng", "ngày", "tháng", "lúc", "thôi", "là", "ai", "gì", "ở", "đâu", "của", "sau", "khi", "trong", "vai", "trò", "giữ", "được", "chính", "phủ", "việt", "nam", "dân", "chủ", "cộng", "hòa", "?", "vua", "hoàng", "đế", "thái", "tử"}
             for w in words:
                 if w.lower() in stopwords:
                     continue
@@ -474,13 +511,51 @@ class QueryPipeline:
             if entity_words:
                 return " ".join(entity_words[:2])  # Lấy 1-2 từ đầu
 
-        # === Fallback cuối: lấy từ hoa đầu tiên ===
+        # === Fallback 3: lấy từ hoa đầu tiên ===
         words = question.split()
         for w in words:
             if w[0].isupper() if w else False:
                 return w
 
         return question.strip().rstrip("?").strip()
+
+    def _find_person_names_in_question(self, question: str) -> List[str]:
+        """
+        NEW: Search database for any known person names mentioned in the question.
+        This helps catch cases like "việc Dục Đức bị phế truất" where Dục Đức is mid-sentence.
+        Returns list of person names found, ordered by relevance.
+        """
+        if not self.graph_db or not self.graph_db.driver:
+            return []
+        
+        try:
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                # Query all person names from database
+                result = session.run("""
+                    MATCH (p:Person)
+                    RETURN p.name as name, p.full_name as full_name, p.other_name as other_name
+                    LIMIT 500
+                """)
+                
+                found_names = []
+                question_lower = question.lower()
+                
+                for record in result:
+                    name = record.get("name", "").strip()
+                    full_name = record.get("full_name", "").strip()
+                    other_name = record.get("other_name", "").strip()
+                    
+                    # Check if any name appears in question
+                    for candidate_name in [name, full_name, other_name]:
+                        if candidate_name and len(candidate_name) > 2:
+                            if candidate_name.lower() in question_lower:
+                                found_names.append(candidate_name)
+                                break
+                
+                # Return names ordered by length (longer = more specific)
+                return sorted(found_names, key=len, reverse=True)
+        except Exception as e:
+            return []
 
     def _extract_keywords(self, question: str) -> List[str]:
         """
@@ -822,6 +897,18 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         candidates = []
         seen_ids = set()
 
+        # === RELATIONSHIP-BASED SEARCH cho SUCCESSOR_OF/PREDECESSOR_OF ===
+        relationship_intents = ["SUCCESSOR_OF", "PREDECESSOR_OF"]
+        if intent in relationship_intents:
+            rel_candidates = self._search_relationship_for_entity(entity, intent)
+            print(f"  [Relationship] Found {len(rel_candidates)} relationship candidates for {intent}")
+            for c in rel_candidates:
+                if c.get("id") not in seen_ids:
+                    c["score"] = 2.5
+                    candidates.append(c)
+                    seen_ids.add(c.get("id"))
+                    print(f"    - Added relationship candidate: {c.get('name', 'N/A')} (score: {c.get('score', 0)})")
+
         # === DEBUG: Check if entity exists in DB ===
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             debug_result = session.run("""
@@ -1003,6 +1090,35 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     })
             
             return candidates
+
+    def _search_relationship_for_entity(self, entity: str, intent: str) -> List[Dict]:
+        """Tìm relationship SUCCESSOR_OF/PREDECESSOR_OF cho entity."""
+        from retriever.graph_retriever import GraphRetriever
+        retriever = GraphRetriever(self.graph_db)
+        
+        try:
+            rel_result = retriever.retrieve_by_relationship_type(entity, intent)
+            candidates = []
+            
+            for target in rel_result.get("targets", []):
+                target_props = target.get("target", {})
+                tid = target_props.get("id") or target_props.get("name", "")
+                if tid:
+                    candidates.append({
+                        "id": tid,
+                        "type": "Person",
+                        "name": target_props.get("name", ""),
+                        "properties": target_props,
+                        "score": 2.5,
+                        "source": f"relationship:{intent}",
+                        "relationship": intent,
+                        "direction": target.get("direction", "outgoing")
+                    })
+            
+            return candidates
+        except Exception as e:
+            print(f"  [Relationship] Error searching {intent} for {entity}: {e}")
+            return []
 
     def _fulltext_search(self, entity: str, keywords: List[str]) -> List[Dict]:
         """Fulltext search - primary entry point. LUÔN bao gồm all_names."""
@@ -1382,7 +1498,11 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                    p.description as description, p.role as role, p.title as title,
                    p.birth_date as birth_date, p.death_date as death_date,
                    p.birth_year as birth_year, p.death_year as death_year,
-                   p.reign_start as reign_start, p.reign_end as reign_end
+                   p.reign_start as reign_start, p.reign_end as reign_end,
+                   p.reign_duration as reign_duration,
+                   p.adoptive_father as adoptive_father,
+                   p.father as father,
+                   p.mother as mother
         """, peid=person_eid)
         
         context = {
@@ -1403,6 +1523,10 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             "death_year": "",
             "reign_start": "",
             "reign_end": "",
+            "reign_duration": "",
+            "adoptive_father": "",
+            "father": "",
+            "mother": "",
             "all_names": [],
             "related": []
         }
@@ -1423,6 +1547,10 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             context["death_year"] = pr.get("death_year", "") or ""
             context["reign_start"] = pr.get("reign_start", "") or ""
             context["reign_end"] = pr.get("reign_end", "") or ""
+            context["reign_duration"] = pr.get("reign_duration", "") or ""
+            context["adoptive_father"] = pr.get("adoptive_father", "") or ""
+            context["father"] = pr.get("father", "") or ""
+            context["mother"] = pr.get("mother", "") or ""
             break
         
         # Lấy TẤT CẢ Name nodes
@@ -1528,46 +1656,83 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     "related_persons": related_persons  # Người liên quan đến Event
                 })
         
-        # Lấy Person-related (family relationships)
+        # === FIX: Lấy Person-related (family relationships) với ĐẦY ĐỦ relationship properties ===
         family_result = session.run("""
             MATCH (p:Person)-[r]-(related:Person)
             WHERE elementId(p) = $peid
             RETURN related.name as rel_name, 
                    type(r) as relationship,
-                   startNode(r).name = p.name as is_outgoing
-            LIMIT 20
+                   startNode(r).name = p.name as is_outgoing,
+                   properties(r) as rel_properties
+            LIMIT 30
         """, peid=person_eid)
         
         for rr in family_result:
             rln = rr.get("rel_name", "")
             rel_type = rr.get("relationship", "")
             is_outgoing = rr.get("is_outgoing", True)
+            rel_props = rr.get("rel_properties", {}) or {}
             
             if rln:
-                rel_text = self._format_relationship(rel_type, is_outgoing, rln)
+                # FIX: Pass relationship properties để format biết loại quan hệ (ruột vs nuôi)
+                rel_text = self._format_relationship(rel_type, is_outgoing, rln, rel_props)
                 context["related"].append({
                     "name": rln,
                     "type": "Person",
-                    "rel": rel_text
+                    "rel": rel_text,
+                    "rel_props": rel_props  # Store relationship properties
+                })
+        
+        # === FIX: THÊM CARED_BY relationships (người nuôi dạy/chăm sóc) ===
+        cared_by_result = session.run("""
+            MATCH (p:Person)-[r:CARED_BY]-(caregiver:Person)
+            WHERE elementId(p) = $peid
+            RETURN caregiver.name as caregiver_name, 
+                   properties(r) as rel_properties
+            LIMIT 10
+        """, peid=person_eid)
+        
+        for cr in cared_by_result:
+            caregiver = cr.get("caregiver_name", "")
+            if caregiver:
+                context["related"].append({
+                    "name": caregiver,
+                    "type": "Person",
+                    "rel": f"{caregiver} (là người nuôi dạy/chăm sóc)",
+                    "rel_type": "CARED_BY",
+                    "rel_props": cr.get("rel_properties", {}) or {}
                 })
         
         return context
     
-    def _format_relationship(self, rel_type: str, is_outgoing: bool, target_name: str) -> str:
+    def _format_relationship(self, rel_type: str, is_outgoing: bool, target_name: str, rel_props = None) -> str:
         """
-        Format relationship text theo đúng chiều.
+        Format relationship text theo đúng chiều và thuộc tính.
         
         User's Neo4j convention:
-        - (Đồng Khánh)-[CHILD_OF]->(Nguyễn Thị Cẩm) 
-          → Đồng Khánh là CON CỦA Nguyễn Thị Cẩm
+        - (Đồng Khánh)-[CHILD_OF {relationship_type: 'adoptive'}]->(Tự Đức) 
+          → Đồng Khánh là CON NUÔI CỦA Tự Đức
+        - (Đồng Khánh)-[CHILD_OF {relationship_type: 'biological'}]->(Nguyễn Phúc Hồng Cai)
+          → Đồng Khánh là CON RUỘTcủa Nguyễn Phúc Hồng Cai
         
         is_outgoing=True: p-[rel]->target → target là parent của p
         is_outgoing=False: p<-[rel]-target → target là parent của p
         """
-        # CHILD_OF luôn đi từ child → parent
-        # Vậy cả 2 chiều đều có nghĩa: target là cha/mẹ của p
+        if rel_props is None:
+            rel_props = {} if isinstance(rel_props, dict) else {}
+        elif not isinstance(rel_props, dict):
+            rel_props = {}
+        
+        # === FIX: Handle CHILD_OF with relationship_type property ===
         if rel_type.upper() == "CHILD_OF":
-            return f"{target_name} (là cha/mẹ của p)"
+            rel_subtype = rel_props.get("relationship_type", "")
+            
+            if rel_subtype.lower() == "adoptive":
+                return f"{target_name} (là cha/mẹ NUÔI)"
+            elif rel_subtype.lower() == "biological":
+                return f"{target_name} (là cha/mẹ RUỘTcủa p)"
+            else:
+                return f"{target_name} (là cha/mẹ của p)"
         
         if rel_type.upper() == "PARENT_OF":
             if is_outgoing:
@@ -1576,22 +1741,59 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 return f"p (là cha/mẹ của {target_name})"
         
         if rel_type.upper() == "FATHER_OF":
-            if is_outgoing:
-                return f"{target_name} (là con của p)"
+            rel_subtype = rel_props.get("relationship_type", "")
+            if rel_subtype.lower() == "adoptive":
+                return f"{target_name} (là cha NUÔI)"
+            elif rel_subtype.lower() == "biological":
+                return f"{target_name} (là cha RUỘTcủa p)"
             else:
-                return f"p (là cha của {target_name})"
+                if is_outgoing:
+                    return f"{target_name} (là con của p)"
+                else:
+                    return f"p (là cha của {target_name})"
         
         if rel_type.upper() == "MOTHER_OF":
-            if is_outgoing:
-                return f"{target_name} (là con của p)"
+            rel_subtype = rel_props.get("relationship_type", "")
+            if rel_subtype.lower() == "adoptive":
+                return f"{target_name} (là mẹ NUÔI)"
+            elif rel_subtype.lower() == "biological":
+                return f"{target_name} (là mẹ RUỘTcủa p)"
             else:
-                return f"p (là mẹ của {target_name})"
+                if is_outgoing:
+                    return f"{target_name} (là con của p)"
+                else:
+                    return f"p (là mẹ của {target_name})"
+        
+        if rel_type.upper() == "CARED_BY":
+            return f"{target_name} (là người nuôi dạy/chăm sóc)"
         
         if rel_type.upper() == "SPOUSE_OF":
             return f"{target_name} (là vợ/chồng của p)"
         
         if rel_type.upper() == "SIBLING_OF":
-            return f"{target_name} (là anh chị em của p)"
+            rel_subtype = rel_props.get("relationship_type", "")
+            if rel_subtype.lower() == "half_sibling":
+                return f"{target_name} (là anh chị em cùng cha/mẹ)"
+            elif rel_subtype.lower() == "full_sibling":
+                return f"{target_name} (là anh chị em ruột)"
+            else:
+                return f"{target_name} (là anh chị em của p)"
+        
+        if rel_type.upper() == "SUCCESSOR_OF":
+            rel_type_prop = rel_props.get("type", "")
+            certainty_text = f" ({rel_type_prop})" if rel_type_prop else ""
+            if is_outgoing:
+                return f"{target_name} (là người kế nhiệm của p){certainty_text}"
+            else:
+                return f"p (là người kế nhiệm của {target_name}){certainty_text}"
+        
+        if rel_type.upper() == "PREDECESSOR_OF":
+            rel_type_prop = rel_props.get("type", "")
+            certainty_text = f" ({rel_type_prop})" if rel_type_prop else ""
+            if is_outgoing:
+                return f"{target_name} (là người tiền nhiệm của p){certainty_text}"
+            else:
+                return f"p (là người tiền nhiệm của {target_name}){certainty_text}"
         
         return f"{target_name} ({rel_type})"
 
@@ -1653,7 +1855,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             line = f"\n[{node_type}] {name}"
             
             # Birth/Death/Reign info
-            for key in ["birth_date", "birth_year", "death_date", "death_year", "reign_start", "reign_end"]:
+            for key in ["birth_date", "birth_year", "death_date", "death_year", "reign_start", "reign_end", "reign_duration", "reign_duration_days", "reign_length_days", "duration_days", "adoptive_father", "father", "mother"]:
                 val = c.get(key, "") or c.get("properties", {}).get(key, "")
                 if val:
                     line += f"\n  {key}: {val}"
@@ -1706,7 +1908,12 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     if rel_text:
                         line += f"\n    - {rel_name}: {rel_text}{detail_str}{related_persons_str}"
                     else:
-                        line += f"\n    - {rel_name} ({r.get('type', '')}){detail_str}{related_persons_str}"
+                        # Fallback: dùng type node, không dùng relationship type bằng tiếng Anh
+                        node_type = r.get('type', '')
+                        if node_type:
+                            line += f"\n    - {rel_name} ({node_type}){detail_str}{related_persons_str}"
+                        else:
+                            line += f"\n    - {rel_name}{detail_str}{related_persons_str}"
             
             # Phân chia: main entity vs others
             if c.get("id") == main_entity_id:
@@ -1804,6 +2011,13 @@ Gợi ý:
             return self._no_data_answer(query_info)
         
         print(f"  Context length: {len(filtered_context)} chars")
+        
+        # DEBUG: Print context for successor/predecessor queries
+        if query_info.get('intent') in ['SUCCESSOR_OF', 'PREDECESSOR_OF']:
+            print(f"  [DEBUG] Context preview for {query_info.get('intent')}:")
+            # Print first 2000 chars
+            print(filtered_context[:2000])
+            print("  [...truncated...]")
 
         # ===== 5. ANSWER GENERATION =====
         print("\n[5/5] Answer Generation (LLM)...")

@@ -64,7 +64,7 @@ class GraphRetriever:
     def retrieve_person_full_profile(self, person_name: str) -> Dict[str, Any]:
         """
         Retrieve complete profile of a person including all relationships:
-        BORN_IN, WORKED_IN, ACTIVE_IN, ACHIEVED, INFLUENCED_BY, DESCRIBED_IN
+        BORN_IN, WORKED_IN, ACTIVE_IN, ACHIEVED, INFLUENCED_BY, DESCRIBED_IN, SUCCESSOR_OF, PREDECESSOR_OF
         
         Args:
             person_name: Name of the person
@@ -88,6 +88,8 @@ class GraphRetriever:
         OPTIONAL MATCH (p)-[:PARTICIPATED_IN]->(event:Event)
         OPTIONAL MATCH (event)-[:HAPPENED_AT]->(event_tp:TimePoint)
         OPTIONAL MATCH (p)-[:HAS_NAME]->(name:Name)
+        OPTIONAL MATCH (p)-[:SUCCESSOR_OF]->(successor:Person)
+        OPTIONAL MATCH (p)<-[:SUCCESSOR_OF]-(predecessor:Person)
         RETURN 
             p,
             collect(DISTINCT born_tp) AS born_timepoints,
@@ -103,7 +105,9 @@ class GraphRetriever:
             collect(DISTINCT company.name) AS companies_founded,
             collect(DISTINCT event) AS events,
             collect(DISTINCT event_tp) AS event_timepoints,
-            collect(DISTINCT {name: name.value, name_type: name.name_type}) AS names
+            collect(DISTINCT {name: name.value, name_type: name.name_type}) AS names,
+            collect(DISTINCT successor.name) AS successors,
+            collect(DISTINCT predecessor.name) AS predecessors
         """
         
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
@@ -132,6 +136,8 @@ class GraphRetriever:
             events = [dict(e) for e in (record["events"] or [])]
             event_tps = [dict(tp) for tp in (record["event_timepoints"] or []) if tp]
             names = [n for n in (record["names"] or []) if n and n.get("name")]
+            successors = [s for s in (record["successors"] or []) if s]
+            predecessors = [p for p in (record["predecessors"] or []) if p]
             
             context = self._build_full_person_context(
                 person_name,
@@ -150,6 +156,8 @@ class GraphRetriever:
                 died_tps,
                 event_tps,
                 names,
+                successors,
+                predecessors,
             )
             
             return {
@@ -168,6 +176,8 @@ class GraphRetriever:
                 "wiki_chunks": wiki_chunks,
                 "companies_founded": companies,
                 "events": events,
+                "successors": successors,
+                "predecessors": predecessors,
                 "context": context
             }
     
@@ -200,6 +210,7 @@ class GraphRetriever:
             "ENEMY_OF": "Person",
             "FRIEND_OF": "Person",
             "SUCCESSOR_OF": "Person",
+            "PREDECESSOR_OF": "Person",
             # Other relationships
             "BORN_IN": "Country",
             "BORN_AT": "TimePoint",
@@ -225,8 +236,44 @@ class GraphRetriever:
                 "error": f"Unknown relationship type: {relationship_type}"
             }
         
-        # Handle Name node differently (uses 'value' instead of 'name')
-        if target_type == "Name":
+        targets = []  # Initialize targets list
+        
+        # Handle special cases for successor/predecessor relationships
+        if relationship_type == "SUCCESSOR_OF":
+            # To find successors of person, query (person)-[:PREDECESSOR_OF]->(target)
+            query = f"""
+            MATCH (p:Person {{name: $name}})-[r:PREDECESSOR_OF]->(target:{target_type})
+            RETURN target, r, 'outgoing' AS direction
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                for record in result:
+                    target_props = dict(record["target"])
+                    rel_props = dict(record["r"])
+                    direction = record.get("direction", "outgoing")
+                    targets.append({
+                        "target": target_props,
+                        "relationship_properties": rel_props,
+                        "direction": direction
+                    })
+        elif relationship_type == "PREDECESSOR_OF":
+            # To find predecessors of person, query (person)<-[:PREDECESSOR_OF]-(target)
+            query = f"""
+            MATCH (p:Person {{name: $name}})<-[r:PREDECESSOR_OF]-(target:{target_type})
+            RETURN target, r, 'incoming' AS direction
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                for record in result:
+                    target_props = dict(record["target"])
+                    rel_props = dict(record["r"])
+                    direction = record.get("direction", "incoming")
+                    targets.append({
+                        "target": target_props,
+                        "relationship_properties": rel_props,
+                        "direction": direction
+                    })
+        elif target_type == "Name":
             query = f"""
             MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:Name)
             RETURN target, r
@@ -243,9 +290,9 @@ class GraphRetriever:
                         "relationship_properties": rel_props
                     })
         else:
-            # For family relationships, query both directions
+            # For other relationships, query both directions if family relationship
             family_rels = {"FATHER_OF", "MOTHER_OF", "CHILD_OF", "SPOUSE_OF", "SIBLING_OF", 
-                          "MENTOR_OF", "STUDENT_OF", "ALLY_OF", "ENEMY_OF", "FRIEND_OF", "SUCCESSOR_OF"}
+                          "MENTOR_OF", "STUDENT_OF", "ALLY_OF", "ENEMY_OF", "FRIEND_OF"}
             
             if relationship_type in family_rels:
                 # Bidirectional query for family relationships
@@ -358,6 +405,8 @@ class GraphRetriever:
         died_timepoints: List[Dict[str, Any]],
         event_timepoints: List[Dict[str, Any]],
         names: List[Dict[str, Any]] = None,
+        successors: List[str] = None,
+        predecessors: List[str] = None,
     ) -> str:
         """Build comprehensive context string for person profile."""
         names = names or []
@@ -391,6 +440,12 @@ class GraphRetriever:
 
         if dynasties:
             lines.append(f"Dynasties: {', '.join(dynasties)}")
+
+        if successors:
+            lines.append(f"Successors: {', '.join(successors)}")
+
+        if predecessors:
+            lines.append(f"Predecessors: {', '.join(predecessors)}")
 
         # Names (HAS_NAME relationships)
         if names:
@@ -488,6 +543,7 @@ class GraphRetriever:
             "ENEMY_OF": "kẻ thù",
             "FRIEND_OF": "bạn",
             "SUCCESSOR_OF": "người kế thừa",
+            "PREDECESSOR_OF": "người tiền nhiệm",
             "BORN_IN": "sinh tại",
             "BORN_AT": "sinh năm",
             "DIED_AT": "mất năm",
