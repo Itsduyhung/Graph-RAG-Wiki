@@ -144,4 +144,30 @@ Question: {question}
 Chỉ trả lời dựa trên context phía trên.
 """
 
+CYPHER_DETECTION_PROMPT = """
+Bạn là chuyên gia về Neo4j và Cypher queries. Phân tích câu hỏi tiếng Việt và quyết định xem có cần dùng Cypher query để trả lời hay không.
+
+Câu hỏi: {question}
+
+Graph Schema:
+- Nodes: Person (properties: name, reign_start_year, reign_end_year, reign_duration_years, reign_duration_days), Dynasty (properties: name, summary), Event, etc.
+- Relationships: BELONGS_TO_DYNASTY, FATHER_OF, MOTHER_OF, CHILD_OF, SPOUSE_OF, etc.
+
+QUAN TRỌNG: Chỉ trả về JSON hợp lệ, không có text khác.
+
+Nếu câu hỏi là về:
+- So sánh/đếm/aggregation (min, max, count, average) trên properties của nodes
+- Tìm người có giá trị cao nhất/thấp nhất (ví dụ: trị vì lâu nhất, ngắn nhất)
+- Đếm số lượng (ví dụ: bao nhiêu vua trong triều đại)
+- Thống kê (ví dụ: trung bình thời gian trị vì)
+
+Thì trả về {{"needs_cypher": true, "cypher_query": "MATCH ... RETURN ...", "explanation": "giải thích ngắn gọn"}}
+
+Nếu câu hỏi là về tìm kiếm thông tin cụ thể, quan hệ, hoặc không cần aggregation, trả về {{"needs_cypher": false, "cypher_query": "", "explanation": "không cần Cypher"}}
+
+Ví dụ:
+Câu hỏi: "vua nào trị vì ngắn nhất trong triều Nguyễn"
+Trả về: {{"needs_cypher": true, "cypher_query": "MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty) WHERE toLower(d.name) CONTAINS 'nguyễn' RETURN p.name ORDER BY p.reign_duration_years ASC LIMIT 1", "explanation": "tìm vua có thời gian trị vì ngắn nhất"}}
+"""
+
 

@@ -15,7 +15,7 @@ YESCALE_BASE_URL = os.getenv(
     "YESCALE_BASE_URL",
     "https://api.yescale.io/v1/chat/completions",
 )
-YESCALE_MODEL = os.getenv("YESCALE_MODEL", "gemini-2.0-flash")
+YESCALE_MODEL = os.getenv("YESCALE_MODEL", "gemini-2.5-flash")
 YESCALE_API_KEY = os.getenv("YESCALE_API_KEY")
 YESCALE_TIMEOUT = int(os.getenv("YESCALE_TIMEOUT", "300" if "2.5-pro" in os.getenv("YESCALE_MODEL", "") else "120"))
 YESCALE_MAX_RETRIES = int(os.getenv("YESCALE_MAX_RETRIES", "3"))

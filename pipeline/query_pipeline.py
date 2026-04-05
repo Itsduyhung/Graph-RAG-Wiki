@@ -319,11 +319,15 @@ class QueryPipeline:
         # 1.3 Target type inference (simple rule)
         target_type = self._infer_target_type(question_lower, intent)
 
+        # 1.4 Aggregation / comparison detection
+        aggregation = self._llm_cypher_detection(question_lower, entity, intent)
+
         return {
             "entity": entity,
             "intent": intent,
             "target_type": target_type,
             "keywords": keywords,
+            "aggregation": aggregation,
             "original_question": question
         }
 
@@ -425,17 +429,19 @@ class QueryPipeline:
         """Trích xuất entity từ câu hỏi - XỬ LÝ NHIỀU DẠNG."""
         # === CÁC PATTERN theo thứ tự ưu tiên ===
         patterns = [
-            # 1. "tên/của X?" - "tên thật của Bảo Đại?"
-            (r'(?:tên|của|ai là|gì là)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\?|$)', 1),
+            # 1. "X là Y phải không?" - "Bảo Đại là vua cuối cùng của triều Nguyễn phải không?"
+            (r'^([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+là\s+.+?phải\s+không)', 1),
             # 2. "X là ai/gì/ở đâu" - "Bảo Đại là ai?"
             (r'^([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+là\s+ai|\s+là\s+gì|\s+ở\s+đâu)', 1),
             # 3. "X?" - standalone name at start
             (r'^([A-ZÀ-ỹ][a-zà-ỹ]{2,})(?:\s+|$|\?)', 1),
-            # 4. "Sau khi [event], X [verb]" - "Sau khi thoái vị, Bảo Đại giữ..."
+            # 4. "tên/của X?" - "tên thật của Bảo Đại?"
+            (r'(?:tên|của|ai là|gì là)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\?|$)', 1),
+            # 5. "Sau khi [event], X [verb]" - "Sau khi thoái vị, Bảo Đại giữ..."
             (r',?\s*([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:giữ|làm|được|đóng|là|có|ở|sống|mất|năm|nơi|được\s+tổ))', 1),
-            # 5. "trong/cho/với X" - "trong Chính phủ VNDCCH"
+            # 6. "trong/cho/với X" - "trong Chính phủ VNDCCH"
             (r'(?:trong|cho|với)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s|$|\?)', 1),
-            # 6. "năm 1945, X" - "năm 1945, Bảo Đại"
+            # 7. "năm 1945, X" - "năm 1945, Bảo Đại"
             (r',\s*([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:giữ|làm|được|đóng|là|có))', 1),
         ]
 
@@ -580,6 +586,226 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         if any(w in question_lower for w in ['vua', 'hoàng đế', 'nhà', 'thái tử']):
             return "Person"
         return "Person"  # default
+
+    def _llm_cypher_detection(self, question_lower: str, entity: str, intent: str) -> Optional[Dict[str, Any]]:
+        """Use LLM to detect if query needs Cypher and generate Cypher if needed."""
+        # FIX: Skip LLM Cypher detection for questions with specific entities
+        # Only use for logic questions like "vua nào trị vì ngắn nhất?"
+        if entity and len(entity.split()) >= 2 and not any(word in entity.lower() for word in ['triều', 'nhà', 'đại']):
+            print(f"  [Cypher] Skipping LLM detection for specific entity: {entity}")
+            return None
+        
+        from prompts import CYPHER_DETECTION_PROMPT
+        
+        prompt = CYPHER_DETECTION_PROMPT.format(question=question_lower)
+        
+        try:
+            response = call_llm(prompt, model="gemini-flash-lite", temperature=0.1)  # Low temperature for consistency
+            # Parse JSON response
+            import json
+            result = json.loads(response.strip())
+            
+            if result.get('needs_cypher', False):
+                cypher_query = result.get('cypher_query', '')
+                if cypher_query:
+                    return {
+                        'type': 'cypher',
+                        'cypher_query': cypher_query,
+                        'explanation': result.get('explanation', '')
+                    }
+        except Exception as e:
+            print(f"[WARNING] LLM Cypher detection failed: {e}")
+            # Fallback to old pattern-based detection
+            return self._fallback_pattern_detection(question_lower, entity, intent)
+        
+        return None
+
+    def _fallback_pattern_detection(self, question_lower: str, entity: str, intent: str) -> Optional[Dict[str, Any]]:
+        """Fallback pattern-based detection when LLM fails."""
+        if 'vua' not in question_lower and 'hoàng đế' not in question_lower:
+            return None
+
+        # Patterns for minimum/maximum reign duration
+        min_duration_patterns = [
+            'trị vì ngắn nhất', 'cai trị ngắn nhất', 'trị vì ít nhất',
+            'cai trị ít nhất', 'thời gian trị vì ít nhất', 'thời gian cai trị ít nhất',
+            'thời gian trị vì ngắn nhất', 'thời gian cai trị ngắn nhất', 'thống trị ngắn nhất'
+        ]
+        max_duration_patterns = [
+            'trị vì lâu nhất', 'cai trị lâu nhất', 'thời gian trị vì lâu nhất',
+            'thời gian cai trị lâu nhất', 'thống trị lâu nhất', 'thời gian cai trị dài nhất'
+        ]
+        first_patterns = ['vua đầu tiên', 'ai là vua đầu tiên', 'vua đầu tiên của', 'vua đầu tiên trong', 'vua đầu tiên ở']
+        last_patterns = ['vua cuối cùng', 'ai là vua cuối cùng', 'vua cuối cùng của', 'vua cuối cùng trong', 'vua cuối cùng ở']
+
+        if any(p in question_lower for p in min_duration_patterns):
+            return {
+                'type': 'aggregation',
+                'operation': 'min',
+                'metric': 'reign_duration',
+                'scope': 'Dynasty',
+                'target': 'Person'
+            }
+
+        if any(p in question_lower for p in max_duration_patterns):
+            return {
+                'type': 'aggregation',
+                'operation': 'max',
+                'metric': 'reign_duration',
+                'scope': 'Dynasty',
+                'target': 'Person'
+            }
+
+        if any(p in question_lower for p in first_patterns):
+            return {
+                'type': 'aggregation',
+                'operation': 'min',
+                'metric': 'reign_start_year',
+                'scope': 'Dynasty',
+                'target': 'Person'
+            }
+
+        if any(p in question_lower for p in last_patterns):
+            # FIX: Nếu có entity cụ thể (Person name), đây KHÔNG PHẢI aggregation query
+            # VD: "Bảo Đại là vua cuối cùng của triều Nguyễn phải không?" - hỏi về Bảo Đại cụ thể
+            # KHÔNG phải "Ai là vua cuối cùng của triều Nguyễn?"
+            if entity and len(entity.split()) >= 2 and not any(word in entity.lower() for word in ['triều', 'nhà']):
+                return None  # Đây là câu hỏi về person cụ thể, không phải aggregation
+            return {
+                'type': 'aggregation',
+                'operation': 'max',
+                'metric': 'reign_end_year',
+                'scope': 'Dynasty',
+                'target': 'Person'
+            }
+
+        # Fallback for basic reign queries with comparison words
+        if 'ngắn nhất' in question_lower and 'trị vì' in question_lower:
+            return {
+                'type': 'aggregation',
+                'operation': 'min',
+                'metric': 'reign_duration',
+                'scope': 'Dynasty',
+                'target': 'Person'
+            }
+
+        return None
+
+    def _handle_aggregation_query(self, query_info: Dict[str, Any]) -> Optional[str]:
+        """Try to answer aggregation queries directly via Neo4j property graph."""
+        agg = query_info.get('aggregation')
+        if not agg:
+            return None
+
+        # Handle new LLM-generated Cypher queries
+        if agg.get('type') == 'cypher':
+            cypher_query = agg.get('cypher_query', '')
+            if cypher_query:
+                return self._execute_cypher_query(cypher_query)
+            return None
+
+        # Handle old pattern-based aggregation
+        if agg.get('type') != 'aggregation':
+            return None
+
+        dynasty_name = query_info.get('entity', '')
+        if not dynasty_name:
+            return None
+
+        if agg.get('scope') == 'Dynasty' and agg.get('target') == 'Person':
+            answer = self._query_dynasty_reign_aggregation(dynasty_name, agg)
+            if answer:
+                return answer
+
+        return None
+
+    def _execute_cypher_query(self, cypher_query: str) -> Optional[str]:
+        """Execute a Cypher query and format the result as a natural language answer."""
+        try:
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(cypher_query)
+                records = list(result)
+                
+                if not records:
+                    return "Không tìm thấy thông tin phù hợp."
+                
+                # For now, assume single result queries like min/max
+                if len(records) == 1:
+                    record = records[0]
+                    # Generic formatting - just return the values
+                    values = [str(record[key]) for key in record.keys()]
+                    return " ".join(values)
+                else:
+                    # For multiple results, summarize
+                    return f"Tìm thấy {len(records)} kết quả."
+                    
+        except Exception as e:
+            print(f"[ERROR] Cypher query execution failed: {e}")
+            return f"Lỗi thực thi truy vấn: {e}"
+
+    def _query_dynasty_reign_aggregation(self, dynasty_name: str, agg: Dict[str, Any]) -> Optional[str]:
+        """Run direct Cypher for dynasty-level reign aggregation."""
+        order = 'ASC' if agg['operation'] == 'min' else 'DESC'
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            # Prefer exact reign duration properties first
+            duration_result = session.run(
+                """
+                MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty)
+                WHERE toLower(d.name) CONTAINS toLower($dynasty)
+                WITH p, d,
+                     coalesce(
+                         toInteger(p.reign_duration_days),
+                         toInteger(p.reign_length_days),
+                         toInteger(p.duration_days),
+                         toInteger(p.thoi_gian_tri_vi_ngay)
+                     ) AS duration
+                WHERE duration IS NOT NULL
+                RETURN p.name AS person_name, d.name AS dynasty, duration
+                ORDER BY duration %s
+                LIMIT 1
+                """ % order,
+                dynasty=dynasty_name
+            )
+
+            record = duration_result.single()
+            if record:
+                person_name = record['person_name']
+                dynasty = record['dynasty']
+                duration = record['duration']
+                unit = 'ngày'
+                suffix = 'ngắn nhất' if agg['operation'] == 'min' else 'lâu nhất'
+                return f"Vua {person_name} là vua {suffix} trong triều {dynasty} với {duration} {unit}."
+
+            # Fallback: year-based reign interval
+            year_result = session.run(
+                """
+                MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty)
+                WHERE toLower(d.name) CONTAINS toLower($dynasty)
+                WITH p, d,
+                     CASE
+                         WHEN p.reign_start_year IS NOT NULL AND p.reign_end_year IS NOT NULL
+                         THEN abs(toInteger(p.reign_end_year) - toInteger(p.reign_start_year))
+                         ELSE NULL
+                     END AS duration_years,
+                     toInteger(p.reign_start_year) AS start_year,
+                     toInteger(p.reign_end_year) AS end_year
+                WHERE duration_years IS NOT NULL
+                RETURN p.name AS person_name, d.name AS dynasty, duration_years, start_year, end_year
+                ORDER BY duration_years %s
+                LIMIT 1
+                """ % order,
+                dynasty=dynasty_name
+            )
+
+            record = year_result.single()
+            if record:
+                person_name = record['person_name']
+                dynasty = record['dynasty']
+                duration_years = record['duration_years']
+                suffix = 'ngắn nhất' if agg['operation'] == 'min' else 'lâu nhất'
+                return f"Vua {person_name} là vua {suffix} trong triều {dynasty} với khoảng {duration_years} năm trị vì."
+
+        return None
 
     # =========================================================================
     # 2. CANDIDATE RETRIEVAL (DB-driven 100%)
@@ -1541,6 +1767,13 @@ Gợi ý:
         print(f"  Entity: {query_info['entity']}")
         print(f"  Intent: {query_info['intent']}")
         print(f"  Keywords: {query_info['keywords']}")
+        if query_info.get('aggregation'):
+            print(f"  ⚡ Aggregation query detected: {query_info['aggregation']}")
+            agg_answer = self._handle_aggregation_query(query_info)
+            if agg_answer:
+                print("  ✅ Aggregation query answered by graph property search")
+                return agg_answer
+            print("  ⚠️ Aggregation query fallback to normal pipeline")
 
         if not query_info.get("entity"):
             print("  ⚠️ Không trích xuất được entity")

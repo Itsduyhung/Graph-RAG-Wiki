@@ -42,6 +42,7 @@ GRAPH_SCHEMA = {
                 "death_date", "death_year",
                 "biography", "role",
                 "reign_start_year", "reign_end_year",
+                "reign_duration_years", "reign_duration_days",
                 "aliases", "other_names"
             ],
             "description": "Represents a person entity (historical figure, etc.)"
@@ -83,7 +84,7 @@ GRAPH_SCHEMA = {
             "description": "Represents a role/title (e.g., King, Poet, General)"
         },
         DYNASTY: {
-            "properties": ["name", "start_year", "end_year", "description"],
+            "properties": ["name", "start_year", "end_year", "description", "summary"],
             "description": "Represents a dynasty/regime (e.g., Tiền Lê, Trần, Nguyễn)"
         }
     },

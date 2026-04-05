@@ -1013,8 +1013,15 @@ class CustomGraphExtractor:
             node_name = node.get("name", "")
             node_props = node.get("properties", {})
 
+            # Normalize reign properties for Person nodes
+            if node_type == "Person":
+                node_props = self._normalize_reign_properties(node_props)
+                node["properties"] = node_props
+
             if node_id:
                 node_lookup[node_id] = node
+            if node_name:
+                node_lookup[node_name] = node
 
             if node_type == "Name":
                 identifier = {"value": node_name}
@@ -1026,6 +1033,60 @@ class CustomGraphExtractor:
                 "identifier": identifier,
                 "properties": node_props
             })
+
+        # Ensure dynasty metadata and relationships exist for Person nodes
+        dynasty_nodes = {n["identifier"]["name"] for n in nodes if n["type"] == "Dynasty"}
+
+        def _relation_key(value: Any) -> Any:
+            if isinstance(value, dict):
+                return tuple(sorted(value.items()))
+            return str(value)
+
+        existing_rel_pairs = set(
+            (
+                _relation_key(rel.get("from")),
+                _relation_key(rel.get("to")),
+                rel.get("type")
+            )
+            for rel in extracted_data.get("relationships", [])
+        )
+
+        for node in extracted_data.get("nodes", []):
+            if node.get("type") != "Person":
+                continue
+            props = node.get("properties", {})
+            dynasty_name = props.get("dynasty")
+            if dynasty_name:
+                dynasty_node_id = f"dynasty:{dynasty_name}"
+                if dynasty_name not in dynasty_nodes:
+                    nodes.append({
+                        "id": dynasty_node_id,
+                        "type": "Dynasty",
+                        "identifier": {"name": dynasty_name},
+                        "properties": {"name": dynasty_name}
+                    })
+                    dynasty_nodes.add(dynasty_name)
+                    node_lookup[dynasty_node_id] = {
+                        "id": dynasty_node_id,
+                        "type": "Dynasty",
+                        "name": dynasty_name,
+                        "properties": {"name": dynasty_name}
+                    }
+
+                person_key = node.get("id") or node.get("name", "")
+                rel_key = (
+                    _relation_key(person_key),
+                    _relation_key(dynasty_node_id),
+                    "BELONGS_TO_DYNASTY"
+                )
+                if rel_key not in existing_rel_pairs:
+                    extracted_data.get("relationships", []).append({
+                        "from": node.get("id") or node.get("name", ""),
+                        "type": "BELONGS_TO_DYNASTY",
+                        "to": dynasty_node_id,
+                        "properties": {}
+                    })
+                    existing_rel_pairs.add(rel_key)
 
         for rel in extracted_data.get("relationships", []):
             from_id = rel.get("from")
@@ -1065,15 +1126,18 @@ class CustomGraphExtractor:
             if not person_name:
                 continue
 
+            person_props = {
+                "role": person.get("role"),
+                "birth_year": person.get("birth_year"),
+                "death_year": person.get("death_year"),
+                "description": person.get("description", ""),
+            }
+            person_props = self._normalize_reign_properties(person_props)
+
             nodes.append({
                 "type": "Person",
                 "identifier": {"name": person_name},
-                "properties": {
-                    "role": person.get("role"),
-                    "birth_year": person.get("birth_year"),
-                    "death_year": person.get("death_year"),
-                    "description": person.get("description", ""),
-                }
+                "properties": person_props
             })
 
         if nodes or rels:
@@ -1103,6 +1167,33 @@ class CustomGraphExtractor:
             relationships_created = 0
 
         return nodes_created, relationships_created
+
+    def _normalize_reign_properties(self, props: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize and compute reign metadata from extracted person properties."""
+        if not isinstance(props, dict):
+            return props
+
+        if props.get("reign_start") and not props.get("reign_start_year"):
+            try:
+                props["reign_start_year"] = int(props["reign_start"])
+            except Exception:
+                pass
+
+        if props.get("reign_end") and not props.get("reign_end_year"):
+            try:
+                props["reign_end_year"] = int(props["reign_end"])
+            except Exception:
+                pass
+
+        start_year = props.get("reign_start_year")
+        end_year = props.get("reign_end_year")
+        if start_year is not None and end_year is not None:
+            try:
+                props["reign_duration_years"] = abs(int(end_year) - int(start_year))
+            except Exception:
+                pass
+
+        return props
 
     def enrich_text(
         self,
