@@ -1,6 +1,7 @@
 # llm/llm_client.py
 """LLM client dùng YEScale (Gemini 2.0 Flash) thay cho Ollama."""
 
+import json
 import os
 import time
 from typing import Optional
@@ -27,6 +28,7 @@ def call_llm(
     stream: bool = False,  # chưa hỗ trợ stream trong client này
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    timeout: Optional[int] = None,  # Custom timeout in seconds
 ) -> str:
     """
     Gọi LLM qua YEScale (Gemini 2.0 Flash) với API kiểu OpenAI chat/completions.
@@ -37,12 +39,15 @@ def call_llm(
             "YESCALE_API_KEY chưa được cấu hình trong environment (.env)."
         )
 
-    # Auto-detect timeout based on model (slow models need longer timeout)
+    # Use custom timeout if provided, otherwise auto-detect based on model
+    if timeout is None:
+        effective_model = model or YESCALE_MODEL
+        if "2.5" in effective_model:
+            timeout = 300
+        else:
+            timeout = 120
+    
     effective_model = model or YESCALE_MODEL
-    if "2.5" in effective_model:
-        timeout = 300
-    else:
-        timeout = 120
     print(f"[DEBUG] call_llm: model={effective_model}, timeout={timeout}")
 
     payload = {
@@ -123,6 +128,112 @@ def call_llm_with_context(
     """
     full_prompt = f"{context}\n\nQuestion: {prompt}"
     return call_llm(full_prompt, model=model, **kwargs)
+
+
+def call_llm_stream(
+    prompt: str,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+):
+    """
+    Gọi LLM với streaming - trả về text chunks từng chút một (real-time).
+    Generator yields text chunks as they arrive.
+    
+    Args:
+        prompt: The prompt to send
+        model: Model name
+        temperature: Temperature for generation
+        max_tokens: Max tokens to generate
+        
+    Yields:
+        Text chunks as they arrive from the API
+    """
+    if not YESCALE_API_KEY:
+        raise RuntimeError("YESCALE_API_KEY chưa được cấu hình trong environment (.env).")
+
+    effective_model = model or YESCALE_MODEL
+    if "2.5" in effective_model:
+        timeout = 300
+    else:
+        timeout = 120
+    
+    print(f"[DEBUG] call_llm_stream: model={effective_model}, timeout={timeout}")
+
+    payload = {
+        "model": model or YESCALE_MODEL,
+        "messages": [
+            {"role": "user", "content": prompt},
+        ],
+        "stream": True,  # Enable streaming
+    }
+
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+
+    headers = {
+        "Authorization": f"Bearer {YESCALE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    last_error = None
+    for attempt in range(YESCALE_MAX_RETRIES):
+        try:
+            response = requests.post(
+                YESCALE_BASE_URL,
+                json=payload,
+                headers=headers,
+                timeout=timeout,
+                stream=True,
+            )
+            response.raise_for_status()
+            
+            # Stream the response line by line
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                
+                # Parse SSE format (data: {...})
+                line_str = line.decode('utf-8') if isinstance(line, bytes) else line
+                if line_str.startswith("data: "):
+                    try:
+                        data = json.loads(line_str[6:])  # Skip "data: " prefix
+                        if "choices" in data and len(data["choices"]) > 0:
+                            delta = data["choices"][0].get("delta", {})
+                            if "content" in delta:
+                                yield delta["content"]
+                    except json.JSONDecodeError:
+                        continue
+            return
+            
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response else None
+            if status_code in [503, 524]:
+                wait_time = (attempt + 1) * 10
+                error_name = "Service Unavailable (503)" if status_code == 503 else "Gateway Timeout (524)"
+                print(f"[RETRY] YEScale {error_name}, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
+                time.sleep(wait_time)
+                last_error = e
+                continue
+            raise ConnectionError(f"HTTP Error {status_code}: {e}")
+        except requests.exceptions.Timeout:
+            wait_time = (attempt + 1) * 15
+            print(f"[RETRY] Request timeout, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
+            time.sleep(wait_time)
+            last_error = e
+            continue
+        except requests.exceptions.RequestException as e:
+            wait_time = (attempt + 1) * 5
+            print(f"[RETRY] Connection error, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
+            time.sleep(wait_time)
+            last_error = e
+            continue
+
+    raise ConnectionError(
+        f"Không thể kết nối đến YEScale sau {YESCALE_MAX_RETRIES} lần thử. Error: {last_error}"
+    )
 
 
 # Backward compatibility - alias cho các tên cũ nếu cần

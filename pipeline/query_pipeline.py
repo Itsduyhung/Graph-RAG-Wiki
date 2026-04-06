@@ -352,8 +352,14 @@ class QueryPipeline:
         """
         question_lower = question.lower()
 
-        # 1.1 Rule-based extraction
-        entity = self._extract_entity(question)
+        # 1.1 Rule-based extraction - PRIORITIZE DB person names FIRST
+        # Try to find known person names from DB first (catches "Lê Long Đĩnh", "Trần Thái Tông", etc.)
+        db_names = self._find_person_names_in_question(question)
+        if db_names:
+            entity = db_names[0]  # Use first (most relevant) name from DB
+        else:
+            entity = self._extract_entity(question)
+        
         keywords = self._extract_keywords(question)
 
         # 1.2 Intent detection - Ưu tiên keyword DÀI HƠN trước
@@ -476,6 +482,12 @@ class QueryPipeline:
 
     def _extract_entity(self, question: str) -> str:
         """Trích xuất entity từ câu hỏi - XỬ LÝ NHIỀU DẠNG."""
+        # === Filter out particles FIRST ===
+        question_clean = question
+        particles = ['thứ mấy', 'bao lâu', 'bao lâu?', 'mấy năm', 'bao năm', 'bao giờ']
+        for particle in particles:
+            question_clean = question_clean.replace(particle, '')
+        
         # === CÁC PATTERN theo thứ tự ưu tiên ===
         patterns = [
             # 0. NEW: "Sau khi X [verb], ai/gì [main question]?" - extract main question part
@@ -792,6 +804,20 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 'scope': 'Dynasty',
                 'target': 'Person'
             }
+        
+        # NEW: Handle "X là vua thứ mấy của triều Y?" - emperor position
+        emperor_position_pattern = r"([A-ZÀ-ỹ][a-zà-ỹ\s]*[A-ZÀ-ỹ])\s+là\s+vua\s+thứ\s+(\w+)\s+(?:của\s+)?(?:triều|nhà)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]*[A-ZÀ-ỹ])"
+        match = re.search(emperor_position_pattern, question_lower)
+        if match:
+            person_name = match.group(1).strip()
+            position_word = match.group(2).strip()
+            dynasty_name = match.group(3).strip()
+            return {
+                'type': 'emperor_position',
+                'person': person_name,
+                'position_word': position_word,
+                'dynasty': dynasty_name
+            }
 
         # Fallback for basic reign queries with comparison words
         if 'ngắn nhất' in question_lower and 'trị vì' in question_lower:
@@ -830,6 +856,13 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             answer = self._query_dynasty_reign_aggregation(dynasty_name, agg)
             if answer:
                 return answer
+        
+        # Handle emperor position queries: "vua thứ mấy"
+        if agg.get('type') == 'emperor_position':
+            position = agg.get('position', 0)
+            dynasty_name = agg.get('dynasty', '')
+            person_name = agg.get('person', '')
+            return self._find_emperor_position(person_name, dynasty_name)
 
         return None
 
@@ -920,6 +953,62 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 return f"Vua {person_name} là vua {suffix} trong triều {dynasty} với khoảng {duration_years} năm trị vì."
 
         return None
+
+    def _find_emperor_position(self, person_name: str, dynasty_name: str) -> Optional[str]:
+        """Find the emperor's position (thứ mấy) in a dynasty by reign_start_year."""
+        with self.graph_db.driver.session(database=self.graph_db.database) as session:
+            # First, get the person's reign_start_year
+            person_result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE toLower(p.name) CONTAINS toLower($person)
+                RETURN p.name as name, toInteger(p.reign_start_year) as start_year
+                LIMIT 1
+                """,
+                person=person_name
+            )
+            
+            person_record = person_result.single()
+            if not person_record:
+                return None
+            
+            start_year = person_record['start_year']
+            actual_name = person_record['name']
+            
+            if not start_year:
+                return None
+            
+            # Find all emperors in the dynasty ordered by reign_start_year
+            dynasty_result = session.run(
+                """
+                MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty)
+                WHERE toLower(d.name) CONTAINS toLower($dynasty)
+                AND p.reign_start_year IS NOT NULL
+                WITH p, d, toInteger(p.reign_start_year) as start_y
+                ORDER BY start_y ASC
+                RETURN p.name as name, start_y as start_year
+                """,
+                dynasty=dynasty_name
+            )
+            
+            emperors = list(dynasty_result)
+            if not emperors:
+                return None
+            
+            # Find position (1-indexed)
+            for idx, emp in enumerate(emperors, 1):
+                if emp['start_year'] == start_year:
+                    return f"{actual_name} là vua thứ {self._number_to_vietnamese(idx)} của nhà {dynasty_name.replace('triều ', '').replace('nhà ', '')}."
+            
+            return None
+
+    def _number_to_vietnamese(self, num: int) -> str:
+        """Convert number to Vietnamese ordinal (1 -> một, 2 -> hai, etc.)."""
+        vietnamese_numbers = {
+            1: "nhất", 2: "hai", 3: "ba", 4: "tư", 5: "năm",
+            6: "sáu", 7: "bảy", 8: "tám", 9: "chín", 10: "mười"
+        }
+        return vietnamese_numbers.get(num, str(num))
 
     # =========================================================================
     # 2. CANDIDATE RETRIEVAL (DB-driven 100%)
@@ -2301,6 +2390,11 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     if an.get('value'):
                         line += f"\n    - {an['value']} [{an.get('type', '')}]"
             
+            # CRITICAL: Ensure reign_duration is always shown
+            reign_duration = c.get("reign_duration") or c.get("properties", {}).get("reign_duration")
+            if reign_duration and "reign_duration" not in line:
+                line += f"\n  reign_duration: {reign_duration}"
+            
             # Properties (exclude those already displayed above)
             all_props = c.get("properties", {})
             if all_props:
@@ -2369,17 +2463,24 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
     # =========================================================================
 
     def _generate_answer(self, query_info: Dict, context: str) -> str:
-        """Generate answer từ context đã lọc."""
+        """Generate answer từ context đã lọc - with real-time streaming."""
         if not context:
             return self._no_data_answer(query_info)
 
-        # FIX: Use low temperature (0.1) for deterministic, factual answers
-        # Temperature 0.7 caused non-deterministic behavior - same query gave different answers
-        return self.answer_generator.generate_answer(
+        # Stream answer in real-time
+        answer_text = ""
+        print("\n💬 Trả lời (real-time):\n", end="", flush=True)
+        
+        for chunk in self.answer_generator.generate_answer_stream(
             question=query_info["original_question"],
             context=context,
             temperature=0.1  # Low temperature = consistent, fact-based answers
-        )
+        ):
+            print(chunk, end="", flush=True)
+            answer_text += chunk
+        
+        print()  # Newline after streaming
+        return answer_text
 
     def _no_data_answer(self, query_info: Dict) -> str:
         """Fallback khi không có data."""
@@ -2445,6 +2546,7 @@ Gợi ý:
 
         # ===== 4. CONTEXT FILTERING =====
         print("\n[4/5] Context Filtering (LLM)...")
+        # Send ALL candidates for verification/debugging of search results
         filtered_context = self._filter_context(query_info, expanded)
         
         if not filtered_context:
@@ -2468,7 +2570,25 @@ Gợi ý:
         print(f"✅ Answer generated")
         print(f"{'='*60}\n")
         
-        return answer
+        # Find the main Person candidate (highest score)
+        main_person = None
+        for c in candidates:
+            if c.get('type') == 'Person':
+                main_person = c.get('name', '')
+                break
+        
+        # Append active person to answer for .NET backend to parse
+        if main_person:
+            print(f"Answer:\n{answer}\n")
+            print(f"Active person: {main_person}")
+            return f"{answer}\n\nActive person: {main_person}"
+        elif query_info.get("entity"):
+            print(f"Answer:\n{answer}\n")
+            print(f"Active person: {query_info['entity']}")
+            return f"{answer}\n\nActive person: {query_info['entity']}"
+        else:
+            print(f"Answer:\n{answer}\n")
+            return answer
 
     # =========================================================================
     # LEGACY METHODS (kept for compatibility)

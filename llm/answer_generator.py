@@ -1,7 +1,7 @@
 # llm/answer_generator.py
 """Answer generation from retrieved context."""
 from typing import Dict, Any, Optional
-from .llm_client import call_llm
+from .llm_client import call_llm, call_llm_stream
 from .prompt_templates import ANSWER_PROMPT, CONTEXT_SYNTHESIS_PROMPT
 
 
@@ -47,7 +47,10 @@ Khi thấy các từ này → dịch sang tiếng Việt:
 🔴 RULE 3: CHỈ DỰA VÀO CONTEXT - KHÔNG HALLUCINATION
 - Những gì context không có thì TUYỆT ĐỐI KHÔNG PHÁT MINH
 - KHÔNG dùng kiến thức ngoài context
-- NẾU KHÔNG CÓ THÔNG TIN → trả lời: "Hiện tại mình chưa tìm thấy thông tin này trong dữ liệu."
+- NẾU CONTEXT TRỐNG → trả lời: "Hiện tại mình chưa tìm thấy thông tin này trong dữ liệu."
+- NẾU CÓ CONTEXT → TRẢ LỜI TRỰC TIẾP từ context, KHÔNG bắt đầu bằng "Dựa trên dữ liệu, không có thông tin nào..."
+  * Ví dụ SAI: "Dựa trên dữ liệu, không có thông tin về X. Tuy nhiên, có thông tin về Y..."
+  * Ví dụ ĐÚNG: "Dựa trên dữ liệu, Y liên quan đến X như sau: [chi tiết]"
 
 🔴 RULE 4: ĐỌC ĐẦY ĐỦ CONTEXT
 - Xem TẤT CẢ properties
@@ -74,6 +77,11 @@ Khi thấy các từ này → dịch sang tiếng Việt:
 ❌ SAI:
 - Trả lời: "Nguyễn Trãi PARTICIPATED_IN the Lam Son Uprising"
 - Trả lời: "He was a MENTOR_OF Lê Lợi"
+
+=== RULE 5: KHÔNG ĐÓ MỞ "KHÔNG CÓ - TUY NHIÊN CÓ" ===
+- TUYỆT ĐỐI KHÔNG bắt đầu: "Không có thông tin X. Tuy nhiên, có thông tin Y..."
+- Nếu có BẤT KỲ context nào → trả lời trực tiếp từ context đó
+- CHỈ nói "không có thông tin" nếu context hoàn toàn trống (sau khi đã đọc hết)
 
 === CÂU TRẢ LỜI ===
 (trả lời hoàn toàn bằng tiếng Việt, rõ ràng, tự nhiên, dễ hiểu)"""
@@ -119,11 +127,49 @@ class AnswerGenerator:
 
         try:
             # FIX: Use temperature=0.1 by default for deterministic, fact-based answers
-            # Higher temperature (0.7+) caused non-deterministic behavior
-            answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.1)
+            # Use timeout=30s for full context (verifying all search results)
+            answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.1, timeout=30)
             return answer
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"
+
+    def generate_answer_stream(
+        self,
+        question: str,
+        context: str,
+        temperature: Optional[float] = None
+    ):
+        """
+        Generate answer with streaming - yields text chunks in real-time.
+
+        Args:
+            question: User question
+            context: Retrieved context from graph
+            temperature: Temperature cho LLM generation
+
+        Yields:
+            Text chunks as they arrive from the API
+        """
+        if not context:
+            yield "❌ Không tìm thấy dữ liệu liên quan."
+            return
+
+        # Escape { and } to avoid format string errors
+        escaped_context = context.replace("{", "{{").replace("}", "}}")
+        escaped_question = question.replace("{", "{{").replace("}", "}}")
+
+        # Use combined prompt - directly answer without separate intent extraction
+        prompt = COMBINED_PROMPT.format(
+            context=escaped_context,
+            question=escaped_question
+        )
+
+        try:
+            # Stream the answer in real-time
+            for chunk in call_llm_stream(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.1):
+                yield chunk
+        except Exception as e:
+            yield f"\n❌ Lỗi khi tạo câu trả lời: {str(e)}"
 
     def generate_answer_with_intent(
         self,
