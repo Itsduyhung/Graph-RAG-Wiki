@@ -19,7 +19,7 @@ YESCALE_BASE_URL = os.getenv(
 YESCALE_MODEL = os.getenv("YESCALE_MODEL", "gemini-2.5-flash")
 YESCALE_API_KEY = os.getenv("YESCALE_API_KEY")
 YESCALE_TIMEOUT = int(os.getenv("YESCALE_TIMEOUT", "300" if "2.5-pro" in os.getenv("YESCALE_MODEL", "") else "120"))
-YESCALE_MAX_RETRIES = int(os.getenv("YESCALE_MAX_RETRIES", "3"))
+YESCALE_MAX_RETRIES = int(os.getenv("YESCALE_MAX_RETRIES", "5"))  # Increased from 3 to 5 for 524 timeouts
 
 
 def call_llm(
@@ -83,17 +83,35 @@ def call_llm(
             return data["choices"][0]["message"]["content"]
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code if e.response else None
-            # 524 = Gateway Timeout - retry
-            if status_code == 524:
-                wait_time = (attempt + 1) * 10  # 10, 20, 30 seconds
-                print(f"[RETRY] YEScale timeout (524), attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
+            
+            # If status_code not extracted, try to extract from error message
+            if status_code is None:
+                error_str = str(e)
+                if "524" in error_str:
+                    status_code = 524
+                elif "503" in error_str:
+                    status_code = 503
+            
+            # 503 (Service Unavailable) and 524 (Gateway Timeout) - retry with exponential backoff
+            if status_code in [503, 524]:
+                wait_time = (2 ** attempt) * 15  # 15s, 30s, 60s, 120s (exponential)
+                error_name = "Service Unavailable (503)" if status_code == 503 else "Gateway Timeout (524)"
+                print(f"[RETRY] YEScale {error_name}, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
                 time.sleep(wait_time)
                 last_error = e
                 continue
             # Other HTTP errors - don't retry
+            print(f"[ERROR] HTTP Error {status_code}: {e}")
             raise ConnectionError(
                 f"Không thể kết nối đến YEScale. HTTP Error: {e}"
             )
+        except requests.exceptions.Timeout as e:
+            # Timeout - retry with exponential backoff
+            wait_time = (2 ** attempt) * 20
+            print(f"[RETRY] Request timeout, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
+            time.sleep(wait_time)
+            last_error = e
+            continue
         except requests.exceptions.RequestException as e:
             # Connection errors - retry with backoff
             wait_time = (attempt + 1) * 5
@@ -103,6 +121,7 @@ def call_llm(
             continue
 
     # All retries exhausted
+    print(f"[ERROR] All {YESCALE_MAX_RETRIES} retries exhausted. Last error: {last_error}")
     raise ConnectionError(
         f"Không thể kết nối đến YEScale sau {YESCALE_MAX_RETRIES} lần thử. Error: {last_error}"
     )
@@ -210,16 +229,26 @@ def call_llm_stream(
             
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code if e.response else None
+            
+            # If status_code not extracted, try to extract from error message
+            if status_code is None:
+                error_str = str(e)
+                if "524" in error_str:
+                    status_code = 524
+                elif "503" in error_str:
+                    status_code = 503
+            
             if status_code in [503, 524]:
-                wait_time = (attempt + 1) * 10
+                wait_time = (2 ** attempt) * 15  # 15s, 30s, 60s, 120s (exponential)
                 error_name = "Service Unavailable (503)" if status_code == 503 else "Gateway Timeout (524)"
                 print(f"[RETRY] YEScale {error_name}, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
                 time.sleep(wait_time)
                 last_error = e
                 continue
+            print(f"[ERROR] HTTP Error {status_code}: {e}")
             raise ConnectionError(f"HTTP Error {status_code}: {e}")
-        except requests.exceptions.Timeout:
-            wait_time = (attempt + 1) * 15
+        except requests.exceptions.Timeout as e:
+            wait_time = (2 ** attempt) * 20
             print(f"[RETRY] Request timeout, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
             time.sleep(wait_time)
             last_error = e
@@ -231,6 +260,7 @@ def call_llm_stream(
             last_error = e
             continue
 
+    print(f"[ERROR] All {YESCALE_MAX_RETRIES} retries exhausted. Last error: {last_error}")
     raise ConnectionError(
         f"Không thể kết nối đến YEScale sau {YESCALE_MAX_RETRIES} lần thử. Error: {last_error}"
     )
