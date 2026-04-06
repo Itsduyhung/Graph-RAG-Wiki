@@ -110,6 +110,12 @@ class QueryPipeline:
         "bí danh": "nickname",
         "tước hiệu": "title",
         "tước vị": "title",
+        "tự xưng": "title",
+        "tự xưng là": "title",
+        "hiệu gì": "title",
+        "tên hiệu": "title",
+        "hoàng hiệu": "title",
+        "đế hiệu": "title",
     }
 
     def __init__(self, graph_db: GraphDB = None, model: str = None):
@@ -199,6 +205,31 @@ class QueryPipeline:
         "thời gian trị vì": "reign_duration",
         "khoảng thời gian trị vì": "reign_duration",
         "thời lượng trị vì": "reign_duration",
+        # === NEW: Personality-related intents ===
+        "tính cách": "personality",
+        "tính tình": "personality",
+        "đặc điểm": "personality",
+        "đặc điểm tính cách": "personality",
+        "tính ngoài": "personality",
+        "tính chất": "personality",
+        "thuộc tính": "personality",
+        "tính chất cá nhân": "personality",
+        # === NEW: Event-related intents ===
+        "sự kiện": "EVENT",
+        "sự kiện ngoại giao": "TREATY",
+        "hòa ước": "TREATY",
+        "điều ước": "TREATY",
+        "hiệp định": "TREATY",
+        "bị ký kết": "TREATY",
+        "ký kết": "TREATY",
+        "ngoại giao": "TREATY",
+        "xảy ra": "EVENT",
+        "diễn ra": "EVENT",
+        "được nêu": "EVENT",
+        "sự kiện quân sự": "MILITARY",
+        "chiến đấu": "MILITARY",
+        "khởi nghĩa": "REBELLION",
+        "ruhiệu": "REBELLION",
     }
 
     # Biến thể câu hỏi - synonym mapping (đồng nghĩa, cùng ý nghĩa)
@@ -447,6 +478,11 @@ class QueryPipeline:
         """Trích xuất entity từ câu hỏi - XỬ LÝ NHIỀU DẠNG."""
         # === CÁC PATTERN theo thứ tự ưu tiên ===
         patterns = [
+            # 0. NEW: "Sau khi X [verb], ai/gì [main question]?" - extract main question part
+            # Match the actual question after temporal clause
+            (r'Sau khi\s+.+?(?:,|\s+)\s*(.+?)(?:\s+tự\s+xưng|\s+chiếm|\s+có|\s+được|\s+là|$|\?)', 1),
+            # 0.5: NEW: "Lần 1/lần thứ nhất, ai [verb]?" - extract after lần marker
+            (r'(?:lần\s+\d+|lần\s+thứ\s+\w+)\s*,?\s*(.+?)(?:\s+chiếm|\s+tự\s+xưng|\s+là|$|\?)', 1),
             # 0. FIX: "Vua/Hoàng đế X Y?" - extract X (person name after title)
             (r'(?:vua|hoàng\s+đế|thái\s+tử|vương|công|tước)\s+([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:tại|trị|sinh|mất|là|của|bao)|\?|$)', 1),
             # 0.5. NEW: "việc X bị..." or "việc X được..." - catch mid-sentence person events
@@ -478,12 +514,15 @@ class QueryPipeline:
             if match:
                 extracted = match.group(group).strip()
                 # Loại bỏ temporal suffixes
-                temporal_suffixes = ["sinh", "mất", "đăng", "lên ngôi", "thoái vị", "năm nào", "lúc nào", "ra sao"]
+                temporal_suffixes = ["sinh năm", "mất năm", "đăng quang", "lên ngôi", "thoái vị", "năm nào", "lúc nào", "ra sao", "tự xưng", "tự xưng là", "tử nạn", "bị phế truất"]
                 for suffix in temporal_suffixes:
                     if extracted.lower().endswith(suffix):
                         extracted = extracted[:-len(suffix)].strip()
+                    # Also check pattern with space before suffix
+                    if " " + suffix in " " + extracted.lower():
+                        extracted = extracted[:extracted.lower().rfind(" " + suffix)].strip()
                 # Loại bỏ từ không phải tên
-                stopwords = {"ai", "gì", "ở", "đâu", "nào", "chính", "phủ", "việt", "nam", "dân", "chủ", "cộng", "hòa", "vai", "trò", "sau", "khi", "trong", "cho", "với", "năm", "tháng", "ngày", "lời", "bài", "vua", "hoàng", "đế", "thái", "tử", "vương", "công", "tước", "được", "được"}
+                stopwords = {"ai", "gì", "ở", "đâu", "nào", "chính", "phủ", "việt", "nam", "dân", "chủ", "cộng", "hòa", "vai", "trò", "sau", "khi", "trong", "cho", "với", "năm", "tháng", "ngày", "lời", "bài", "vua", "hoàng", "đế", "thái", "tử", "vương", "công", "tước", "được", "là", "tự", "xưng", "hiệu"}
                 words = extracted.split()
                 cleaned = " ".join(w for w in words if w.lower() not in stopwords)
                 if cleaned and len(cleaned) > 2:
@@ -940,6 +979,19 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     candidates.append(c)
                     seen_ids.add(c.get("id"))
 
+        # === EVENT SEARCH (NEW) - when intent is event-related ===
+        event_intents = ["EVENT", "TREATY", "MILITARY", "REBELLION"]
+        if intent in event_intents:
+            # Try to find temporal context (emperor name + event search)
+            temporal_emperor = self._extract_emperor_from_query(keywords)
+            event_candidates = self._search_events(entity, expanded_keywords, intent, temporal_emperor)
+            print(f"  [Event] Found {len(event_candidates)} event candidates for intent '{intent}'")
+            for c in event_candidates:
+                if c.get("id") not in seen_ids:
+                    candidates.append(c)
+                    seen_ids.add(c.get("id"))
+                    print(f"    - Added event: {c.get('name', 'N/A')} ({c.get('date', 'N/A')})")
+
         # === NAME-ALIAS SEARCH ===
         name_candidates = self._search_by_name_alias(entity, keywords)
         for c in name_candidates:
@@ -947,12 +999,31 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 candidates.append(c)
                 seen_ids.add(c.get("id"))
 
-        # === FULLTEXT SEARCH ===
-        ft_candidates = self._fulltext_search(entity, expanded_keywords)
+        # === FULLTEXT SEARCH (now searches both Person + Event) ===
+        ft_candidates = self._fulltext_search(entity, expanded_keywords, include_events=(intent not in event_intents))
         for c in ft_candidates:
             if c.get("id") not in seen_ids:
                 candidates.append(c)
                 seen_ids.add(c.get("id"))
+
+        # === FALLBACK: If entity extraction failed (too long/complex), search with keywords instead ===
+        if len(candidates) < 5 and len(entity) > 30:
+            print(f"  [Fallback] Entity too complex ({len(entity)} chars), searching with keywords instead")
+            keyword_candidates = self._fulltext_search("", expanded_keywords, include_events=True)
+            for c in keyword_candidates:
+                if c.get("id") not in seen_ids:
+                    c["score"] = c.get("score", 1.0) * 0.8  # Lower score for fallback
+                    candidates.append(c)
+                    seen_ids.add(c.get("id"))
+            
+            # Additional fallback: Search for people with titles (potential emperors/rulers)
+            print(f"  [Fallback2] Searching for people with titles...")
+            title_search_candidates = self._search_people_with_titles()
+            for c in title_search_candidates:
+                if c.get("id") not in seen_ids:
+                    c["score"] = c.get("score", 1.0) * 0.7
+                    candidates.append(c)
+                    seen_ids.add(c.get("id"))
 
         # === SOFT MATCHING (fallback) ===
         if len(candidates) < 3:
@@ -992,6 +1063,331 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         candidates.sort(key=sort_key)
         
         return candidates[:20]
+
+    def _search_events(self, entity: str, keywords: List[str], event_type: str = None, temporal_emperor: str = None) -> List[Dict]:
+        """Search for Event nodes by name, keywords, or event_type.
+        
+        Args:
+            entity: Main entity to search for
+            keywords: Keywords to match
+            event_type: Type of event (EVENT, TREATY, etc)
+            temporal_emperor: Emperor name to filter events by reign dates
+        """
+        candidates = []
+        
+        if not self.graph_db or not self.graph_db.driver:
+            return candidates
+        
+        if not entity:
+            return candidates
+        
+        try:
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                # First, if we have a temporal emperor, get their reign dates
+                emperor_reign = None
+                if temporal_emperor:
+                    emperor_reign = self._get_emperor_reign_dates(session, temporal_emperor)
+                    if emperor_reign:
+                        print(f"  [Event] Filtering by emperor reign: {temporal_emperor} ({emperor_reign.get('start')} - {emperor_reign.get('end')})")
+                
+                # Search by event name or keywords (fulltext on Event nodes)
+                event_query = """
+                    MATCH (e:Event)
+                    WHERE toLower(e.name) CONTAINS toLower($entity)
+                       OR toLower(e.description) CONTAINS toLower($entity)
+                       OR toLower(e.location) CONTAINS toLower($entity)
+                    RETURN elementId(e) as id, e.name as name, e.date as date, 
+                           e.event_type as event_type, e.description as description,
+                           e.location as location, e.participants as participants,
+                           e.significance as significance
+                    LIMIT 30
+                """
+                
+                results = session.run(event_query, entity=entity or "")
+                
+                for record in results:
+                    event_id = record.get("id")
+                    event_name = record.get("name") or ""
+                    event_date = record.get("date") or ""
+                    
+                    if event_id and event_name:
+                        # If we have emperor reign dates, check if event is within that period
+                        if emperor_reign:
+                            if not self._event_during_reign(event_date, emperor_reign):
+                                continue  # Skip events outside the reign period
+                        
+                        # Calculate relevance score
+                        score = 0
+                        source = "event_search"
+                        
+                        entity_lower = entity.lower() if entity else ""
+                        if entity_lower and entity_lower in event_name.lower():
+                            score = 3.0
+                            source = "event_exact_match"
+                        elif any(kw and kw.lower() in event_name.lower() for kw in (keywords or [])):
+                            score = 2.5
+                            source = "event_keyword_match"
+                        else:
+                            score = 1.5
+                            source = "event_fulltext"
+                        
+                        # Check event_type match (safely handle None)
+                        evt_type_str = record.get("event_type") or ""
+                        evt_type = evt_type_str.upper() if evt_type_str else ""
+                        if event_type and evt_type and event_type.lower() == evt_type.lower():
+                            score += 1.0
+                        
+                        # Boost score if event is within emperor's reign
+                        if emperor_reign and self._event_during_reign(event_date, emperor_reign):
+                            score += 0.5
+                        
+                        candidate = {
+                            "id": event_id,
+                            "type": "Event",
+                            "name": event_name,
+                            "date": event_date,
+                            "event_type": record.get("event_type"),
+                            "description": record.get("description", ""),
+                            "location": record.get("location", ""),
+                            "participants": record.get("participants", ""),
+                            "significance": record.get("significance", ""),
+                            "score": score,
+                            "source": source,
+                            "all_names": [],
+                            "related": [],
+                            "properties": {}
+                        }
+                        
+                        candidates.append(candidate)
+                
+                # FALLBACK: If no results and event_type is provided, search for all events of that type
+                if not candidates and event_type:
+                    fallback_query = """
+                        MATCH (e:Event)
+                        WHERE toLower(e.event_type) = toLower($event_type)
+                        RETURN elementId(e) as id, e.name as name, e.date as date,
+                               e.event_type as event_type, e.description as description,
+                               e.location as location, e.participants as participants,
+                               e.significance as significance
+                        LIMIT 20
+                    """
+                    
+                    print(f"  [Event] Fallback: searching for all events of type {event_type}")
+                    fallback_results = session.run(fallback_query, event_type=event_type)
+                    
+                    for record in fallback_results:
+                        event_id = record.get("id")
+                        event_name = record.get("name") or ""
+                        event_date = record.get("date") or ""
+                        
+                        if event_id and event_name:
+                            # If we have emperor reign dates, check if event is within that period
+                            if emperor_reign:
+                                if not self._event_during_reign(event_date, emperor_reign):
+                                    continue  # Skip events outside the reign period
+                            
+                            score = 1.0  # Lower score for fallback results
+                            source = "event_type_fallback"
+                            
+                            candidate = {
+                                "id": event_id,
+                                "type": "Event",
+                                "name": event_name,
+                                "date": event_date,
+                                "event_type": record.get("event_type"),
+                                "description": record.get("description", ""),
+                                "location": record.get("location", ""),
+                                "participants": record.get("participants", ""),
+                                "significance": record.get("significance", ""),
+                                "score": score,
+                                "source": source,
+                                "all_names": [],
+                                "related": [],
+                                "properties": {}
+                            }
+                            
+                            candidates.append(candidate)
+                
+                print(f"  [Event Search] Found {len(candidates)} events")
+                
+                print(f"  [Event Search] Found {len(candidates)} events")
+        
+        except Exception as e:
+            print(f"  [Event Search] Error: {e}")
+        
+        return candidates
+
+    def _extract_emperor_from_query(self, keywords: List[str]) -> str:
+        """Extract emperor name from keywords (e.g., 'Kiến Phúc', 'Dục Đức')."""
+        # Common Vietnamese emperor names
+        emperor_names = [
+            "Kiến Phúc", "Dục Đức", "Đồng Khánh", "Thành Thái", "Khải Định",
+            "Bảo Đại", "Cảnh Hùng", "Bình Việt", "Ưng Đăng", "Minh Mạng",
+            "Tự Đức", "Tùn Thiện", "Hàm Nghi", "Gia Long", "Minh Huỳền"
+        ]
+        
+        # Check if any emperor name is in keywords
+        for keyword in keywords:
+            for emperor in emperor_names:
+                if emperor.lower() in keyword.lower() or keyword.lower() in emperor.lower():
+                    return emperor
+        
+        return None
+
+    def _get_emperor_reign_dates(self, session, emperor_name: str) -> dict:
+        """Get emperor's reign start and end dates."""
+        try:
+            result = session.run("""
+                MATCH (p:Person)
+                WHERE toLower(p.name) CONTAINS toLower($emperor)
+                   OR toLower(p.main_name) CONTAINS toLower($emperor)
+                RETURN p.reign_start as start, p.reign_end as end
+                LIMIT 1
+            """, emperor=emperor_name)
+            
+            record = result.single()
+            if record:
+                return {
+                    "start": record.get("start"),
+                    "end": record.get("end")
+                }
+        except Exception as e:
+            print(f"  [Event] Error getting reign dates: {e}")
+        
+        return None
+
+    def _event_during_reign(self, event_date: str, emperor_reign: dict) -> bool:
+        """Check if an event date falls within emperor's reign period."""
+        if not event_date or not emperor_reign:
+            return False
+        
+        try:
+            # Try to extract year from event_date (format: YYYY-MM-DD or YYYY)
+            event_year = None
+            if isinstance(event_date, str):
+                # Try to extract year
+                import re
+                year_match = re.search(r'(\d{4})', event_date)
+                if year_match:
+                    event_year = int(year_match.group(1))
+            
+            if not event_year:
+                return False
+            
+            # Get reign years
+            start_year = None
+            end_year = None
+            
+            if emperor_reign.get("start"):
+                start_str = str(emperor_reign.get("start"))
+                year_match = re.search(r'(\d{4})', start_str)
+                if year_match:
+                    start_year = int(year_match.group(1))
+            
+            if emperor_reign.get("end"):
+                end_str = str(emperor_reign.get("end"))
+                year_match = re.search(r'(\d{4})', end_str)
+                if year_match:
+                    end_year = int(year_match.group(1))
+            
+            # Check if event year is within reign period
+            if start_year and end_year:
+                return start_year <= event_year <= end_year
+            elif start_year:
+                return event_year >= start_year
+            elif end_year:
+                return event_year <= end_year
+        except Exception as e:
+            print(f"  [Event] Error checking event date: {e}")
+        
+        return False
+
+    def _search_people_with_titles(self) -> List[Dict]:
+        """Search for all people with titles (potential emperors/rulers during occupations)."""
+        candidates = []
+        
+        if not self.graph_db or not self.graph_db.driver:
+            return candidates
+        
+        try:
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                # Search for people with titles relating to emperorship
+                # Include 16th-17th century occupants: Trần Cảo, Mạc Đăng Dung, etc.
+                result = session.run("""
+                    MATCH (p:Person)
+                    WHERE p.title IS NOT NULL
+                      AND (toLower(p.title) CONTAINS 'đế'
+                           OR toLower(p.title) CONTAINS 'vua'
+                           OR toLower(p.title) CONTAINS 'phó'
+                           OR toLower(p.title) CONTAINS 'quốc'
+                           OR toLower(p.title) CONTAINS 'công'
+                           OR toLower(p.title) CONTAINS 'vương')
+                    RETURN elementId(p) as id, p.name as name, p.title as title,
+                           p.birth_year as birth_year, p.death_year as death_year,
+                           p.description as description
+                    LIMIT 30
+                """)
+                
+                for record in result:
+                    person_id = record.get("id")
+                    person_name = record.get("name") or ""
+                    
+                    if person_id and person_name:
+                        candidate = {
+                            "id": person_id,
+                            "type": "Person",
+                            "name": person_name,
+                            "title": record.get("title", ""),
+                            "birth_year": record.get("birth_year", ""),
+                            "death_year": record.get("death_year", ""),
+                            "description": record.get("description", ""),
+                            "score": 1.5,
+                            "source": "title_search",
+                            "all_names": [],
+                            "related": [],
+                            "properties": {}
+                        }
+                        candidates.append(candidate)
+                
+                # Also specifically search for known occupants by name
+                print(f"  [Title Search] Found {len(candidates)} people with titles")
+                
+                # Additional targeted search for specific emperors
+                specific_names = ["Trần Cảo", "Mạc Đăng Dung", "Mac Dang Dung"]
+                for target_name in specific_names:
+                    specific_result = session.run("""
+                        MATCH (p:Person)
+                        WHERE toLower(p.name) CONTAINS toLower($name)
+                        RETURN elementId(p) as id, p.name as name, p.title as title,
+                               p.description as description
+                        LIMIT 1
+                    """, name=target_name)
+                    
+                    for record in specific_result:
+                        person_id = record.get("id")
+                        # Check if already in candidates
+                        if not any(c.get("id") == person_id for c in candidates):
+                            person_name = record.get("name") or ""
+                            if person_id and person_name:
+                                candidate = {
+                                    "id": person_id,
+                                    "type": "Person",
+                                    "name": person_name,
+                                    "title": record.get("title", ""),
+                                    "description": record.get("description", ""),
+                                    "score": 2.0,  # Higher score for direct match
+                                    "source": "specific_search",
+                                    "all_names": [],
+                                    "related": [],
+                                    "properties": {}
+                                }
+                                candidates.append(candidate)
+                                print(f"    + Added specific match: {person_name}")
+                
+        except Exception as e:
+            print(f"  [Title Search] Error: {e}")
+        
+        return candidates
 
     def _search_by_name_alias(self, entity: str, keywords: List[str]) -> List[Dict]:
         """Search 2 chiều: Tìm Name nodes → lấy Person liên quan."""
@@ -1120,7 +1516,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             print(f"  [Relationship] Error searching {intent} for {entity}: {e}")
             return []
 
-    def _fulltext_search(self, entity: str, keywords: List[str]) -> List[Dict]:
+    def _fulltext_search(self, entity: str, keywords: List[str], include_events: bool = False) -> List[Dict]:
         """Fulltext search - primary entry point. LUÔN bao gồm all_names."""
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             candidates = []
@@ -1227,6 +1623,40 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                         })
 
             print(f"  [Fulltext] Total candidates: {len(candidates)}")
+            
+            # NEW: Add Event nodes to fulltext search if include_events=True
+            if include_events:
+                for term in search_terms:
+                    result = session.run("""
+                        MATCH (e:Event)
+                        WHERE toLower(e.name) CONTAINS toLower($term)
+                           OR toLower(e.description) CONTAINS toLower($term)
+                           OR toLower(e.location) CONTAINS toLower($term)
+                        RETURN e
+                        LIMIT 10
+                    """, term=term)
+                    
+                    for r in result:
+                        e = r["e"]
+                        eid = e.element_id
+                        
+                        if eid not in [c.get("id") for c in candidates]:
+                            candidates.append({
+                                "id": eid,
+                                "type": "Event",
+                                "name": e.get("name", ""),
+                                "date": e.get("date", ""),
+                                "event_type": e.get("event_type", ""),
+                                "description": e.get("description", ""),
+                                "location": e.get("location", ""),
+                                "participants": e.get("participants", ""),
+                                "significance": e.get("significance", ""),
+                                "properties": dict(e),
+                                "score": 1.2,
+                                "source": "fulltext_event",
+                                "all_names": []
+                            })
+            
             return candidates
 
     def _get_all_names_for_node(self, session, node_eid: str) -> List[Dict]:
@@ -1500,6 +1930,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                    p.birth_year as birth_year, p.death_year as death_year,
                    p.reign_start as reign_start, p.reign_end as reign_end,
                    p.reign_duration as reign_duration,
+                   p.personality as personality,
                    p.adoptive_father as adoptive_father,
                    p.father as father,
                    p.mother as mother
@@ -1524,6 +1955,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             "reign_start": "",
             "reign_end": "",
             "reign_duration": "",
+            "personality": "",
             "adoptive_father": "",
             "father": "",
             "mother": "",
@@ -1548,6 +1980,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             context["reign_start"] = pr.get("reign_start", "") or ""
             context["reign_end"] = pr.get("reign_end", "") or ""
             context["reign_duration"] = pr.get("reign_duration", "") or ""
+            context["personality"] = pr.get("personality", "") or ""
             context["adoptive_father"] = pr.get("adoptive_father", "") or ""
             context["father"] = pr.get("father", "") or ""
             context["mother"] = pr.get("mother", "") or ""
@@ -1854,8 +2287,8 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             
             line = f"\n[{node_type}] {name}"
             
-            # Birth/Death/Reign info
-            for key in ["birth_date", "birth_year", "death_date", "death_year", "reign_start", "reign_end", "reign_duration", "reign_duration_days", "reign_length_days", "duration_days", "adoptive_father", "father", "mother"]:
+            # Birth/Death/Reign info + Title/Alias + ALL Critical Properties
+            for key in ["role", "description", "birth_place", "organization", "action", "phong_vuong_year", "title", "alias", "other_name", "birth_name", "birth_date", "birth_year", "death_date", "death_year", "reign_start", "reign_end", "reign_duration", "reign_duration_days", "reign_length_days", "duration_days", "personality", "adoptive_father", "father", "mother"]:
                 val = c.get(key, "") or c.get("properties", {}).get(key, "")
                 if val:
                     line += f"\n  {key}: {val}"
@@ -1868,12 +2301,17 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                     if an.get('value'):
                         line += f"\n    - {an['value']} [{an.get('type', '')}]"
             
-            # Properties
+            # Properties (exclude those already displayed above)
             all_props = c.get("properties", {})
             if all_props:
                 line += "\n  Properties:"
+                excluded_props = {"role", "description", "birth_place", "organization", "action", "phong_vuong_year", 
+                                 "title", "alias", "other_name", "birth_name", "birth_date", "birth_year", 
+                                 "death_date", "death_year", "reign_start", "reign_end", "reign_duration", 
+                                 "reign_duration_days", "reign_length_days", "duration_days", "personality",
+                                 "adoptive_father", "father", "mother"}
                 for prop, val in all_props.items():
-                    if val and prop not in ["birth_date", "birth_year", "death_date", "death_year"]:
+                    if val and prop not in excluded_props:
                         line += f"\n    - {prop}: {val}"
             
             # Related - FIX: Hiển thị THÊM chi tiết (year, month, age) cho Event nodes
@@ -1935,9 +2373,12 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         if not context:
             return self._no_data_answer(query_info)
 
+        # FIX: Use low temperature (0.1) for deterministic, factual answers
+        # Temperature 0.7 caused non-deterministic behavior - same query gave different answers
         return self.answer_generator.generate_answer(
             question=query_info["original_question"],
-            context=context
+            context=context,
+            temperature=0.1  # Low temperature = consistent, fact-based answers
         )
 
     def _no_data_answer(self, query_info: Dict) -> str:

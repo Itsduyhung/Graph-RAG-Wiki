@@ -118,8 +118,9 @@ class AnswerGenerator:
         )
 
         try:
-            # Dùng flash-lite cho answer generation cho nhanh
-            answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.7)
+            # FIX: Use temperature=0.1 by default for deterministic, fact-based answers
+            # Higher temperature (0.7+) caused non-deterministic behavior
+            answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.1)
             return answer
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"
