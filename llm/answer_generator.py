@@ -1,5 +1,6 @@
 # llm/answer_generator.py
 """Answer generation from retrieved context."""
+import os
 from typing import Dict, Any, Optional
 from .llm_client import call_llm, call_llm_stream
 from .prompt_templates import ANSWER_PROMPT, CONTEXT_SYNTHESIS_PROMPT
@@ -7,6 +8,11 @@ from .prompt_templates import ANSWER_PROMPT, CONTEXT_SYNTHESIS_PROMPT
 
 # Prompt gộp - vừa trích xuất intent vừa trả lời
 COMBINED_PROMPT = """=== TRÍ TRỢ LÝ GRAPH RAG - TRẢ LỜI BẰNG TIẾNG VIỆT 100% ===
+
+⚠️ CẢNH BÁO QUAN TRỌNG: 
+Nếu context CHỨA dữ liệu → TRẢ LỜI TRỰC TIẾP, KHÔNG NÓI "KHÔNG CÓ THÔNG TIN"
+Lỗi phổ biến: "Dữ liệu không có thông tin chi tiết về X. Tuy nhiên, có..." → ĐÂY LÀ LOGIC LẠ RỒI!
+Nếu bạn vừa cung cấp thông tin, thì context CÓ rồi - hãy nói trực tiếp!
 
 Câu hỏi từ người dùng: {question}
 
@@ -78,13 +84,24 @@ Khi thấy các từ này → dịch sang tiếng Việt:
 - Trả lời: "Nguyễn Trãi PARTICIPATED_IN the Lam Son Uprising"
 - Trả lời: "He was a MENTOR_OF Lê Lợi"
 
-=== RULE 5: KHÔNG ĐÓ MỞ "KHÔNG CÓ - TUY NHIÊN CÓ" ===
-- TUYỆT ĐỐI KHÔNG bắt đầu: "Không có thông tin X. Tuy nhiên, có thông tin Y..."
-- Nếu có BẤT KỲ context nào → trả lời trực tiếp từ context đó
-- CHỈ nói "không có thông tin" nếu context hoàn toàn trống (sau khi đã đọc hết)
+=== RULE 5: KHÔNG BẮT ĐẦU BẰNG "KHÔNG CÓ - TUY NHIÊN CÓ" ===
+🚫 BAN CẬM HOÀN TOÀN - Không được dùng những câu mở này:
+- "Dữ liệu không có thông tin chi tiết về X. Tuy nhiên, có thông tin về Y..."
+- "Không tìm thấy X. Nhưng có Z..."
+- "Dựa trên dữ liệu, không có thông tin. Tuy nhiên..."
+- "Hiện chưa tìm thấy X. Nhưng..."
+
+✅ CÁCH LÀM ĐÚNG:
+1. Nếu context CHỨA THÔNG TIN → trả lời TRỰC TIẾP từ context đó (không cần nói "không có")
+2. Nếu context HOÀN TOÀN TRỐNG → chỉ trả: "Hiện tại mình chưa tìm thấy thông tin này trong dữ liệu."
+3. KHÔNG bao giờ khởi đầu bằng cách nói "không có" rồi sau đó cung cấp thông tin liên quan
+
+VÍ DỤ MINH HỌA:
+❌ SAI: "Không có info xuất thân chi tiết. Tuy nhiên, Đào Cam Mộc... Lê Đại Hành trọng dụng..."
+✅ ĐÚNG: "Đào Cam Mộc là quan đại thần, có công lớn trong việc đưa Lý Công Uẩn lên ngôi hoàng đế. Lê Đại Hành, vua nhà Tiền Lê, cũng trọng dụng Lý Công Uẩn."
 
 === CÂU TRẢ LỜI ===
-(trả lời hoàn toàn bằng tiếng Việt, rõ ràng, tự nhiên, dễ hiểu)"""
+(trả lời hoàn toàn bằng tiếng Việt, rõ ràng, tự nhiên, dễ hiểu - BẮT ĐẦU NGAY TỪ NỘI DUNG CHÍNH, KHÔNG MỞ BẰNG "KHÔNG CÓ")"""
 
 
 class AnswerGenerator:
@@ -126,9 +143,10 @@ class AnswerGenerator:
         )
 
         try:
-            # FIX: Use temperature=0.1 by default for deterministic, fact-based answers
+            # Use temperature from env (default 0.1) or parameter
+            default_temp = float(os.getenv('LLM_TEMPERATURE', '0.1'))
             # Use timeout=30s for full context (verifying all search results)
-            answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.1, timeout=30)
+            answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or default_temp, timeout=30)
             return answer
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"

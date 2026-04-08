@@ -867,7 +867,8 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         prompt = CYPHER_DETECTION_PROMPT.format(question=question_lower)
         
         try:
-            response = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=0.1)  # Low temperature for consistency
+            default_temp = float(os.getenv('LLM_TEMPERATURE', '0.1'))
+            response = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=default_temp)
             # Parse JSON response
             import json
             result = json.loads(response.strip())
@@ -2424,10 +2425,11 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         answer_text = ""
         print("  📡 Streaming response from LLM...\n")
         
+        default_temp = float(os.getenv('LLM_TEMPERATURE', '0.1'))
         for chunk in self.answer_generator.generate_answer_stream(
             question=query_info["original_question"],
             context=context,
-            temperature=0.1  # Low temperature = consistent, fact-based answers
+            temperature=default_temp  # Temperature from env for consistency
         ):
             print(chunk, end="", flush=True)
             answer_text += chunk
