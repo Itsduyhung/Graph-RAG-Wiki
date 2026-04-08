@@ -3,13 +3,19 @@
 
 # ===== RELATIONSHIP TRANSLATION MAPPING (Để LLM dùng khi dịch) =====
 RELATIONSHIP_TRANSLATIONS = {
-    # Family relationships
+    # Family relationships - biological/natural
     "CHILD_OF": "con của",
     "FATHER_OF": "cha của",
     "MOTHER_OF": "mẹ của",
     "PARENT_OF": "cha/mẹ của",
     "SPOUSE_OF": "vợ/chồng của",
     "SIBLING_OF": "anh chị em của",
+    # Family relationships - adopted
+    "ADOPTED_CHILD_OF": "con nuôi của",
+    "ADOPTIVE_PARENT_OF": "cha/mẹ nuôi của",
+    # Family relationships - foster/step
+    "FOSTER_CHILD_OF": "con dâu/con rể nuôi của",
+    "FOSTER_PARENT_OF": "cha/mẹ dượng/kế của",
     
     # Leadership & Activities
     "LED": "lãnh đạo",
@@ -85,7 +91,9 @@ Các loại Node trong Graph:
 - WikiChunk (Bài viết wiki)
 
 Các loại Relationship:
-- Quan hệ gia đình: FATHER_OF, MOTHER_OF, CHILD_OF, SPOUSE_OF, SIBLING_OF
+- Quan hệ gia đình (tự nhiên): FATHER_OF, MOTHER_OF, CHILD_OF, SPOUSE_OF, SIBLING_OF
+- Quan hệ gia đình (con nuôi): ADOPTED_CHILD_OF, ADOPTED_PARENT_OF
+- Quan hệ gia đình (dâu/rể/kế): FOSTER_CHILD_OF, FOSTER_PARENT_OF
 - Quan hệ khác: MENTOR_OF, STUDENT_OF, ALLY_OF, ENEMY_OF, FRIEND_OF, SUCCESSOR_OF
 - Quan hệ với thông tin: HAS_NAME, HAS_ROLE
 - Quan hệ về thời gian/nơi chốn: BORN_IN, BORN_AT, DIED_AT
@@ -118,7 +126,7 @@ JSON format:
 {{
   "intent": "FIND_PERSON_PROFILE|FIND_FATHER|FIND_MOTHER|FIND_PARENTS|FIND_SPOUSE|FIND_SIBLINGS|FIND_CHILDREN|FIND_BORN_IN|FIND_BORN_AT|FIND_DIED_AT|FIND_WORKED_IN|FIND_ACTIVE_IN|FIND_ACHIEVEMENTS|FIND_INFLUENCERS|FIND_EVENTS|FIND_DYNASTY|FIND_NAME|FIND_SUCCESSOR|FIND_PREDECESSOR|GENERAL_QUERY",
   "person": "<tên person nếu có>",
-  "relationship_type": "FATHER_OF|MOTHER_OF|CHILD_OF|SPOUSE_OF|SIBLING_OF|MENTOR_OF|STUDENT_OF|ALLY_OF|ENEMY_OF|FRIEND_OF|SUCCESSOR_OF|PREDECESSOR_OF|BORN_IN|BORN_AT|DIED_AT|WORKED_IN|ACTIVE_IN|ACHIEVED|INFLUENCED_BY|PARTICIPATED_IN|HAS_ROLE|BELONGS_TO_DYNASTY|HAS_NAME",
+  "relationship_type": "FATHER_OF|MOTHER_OF|CHILD_OF|SPOUSE_OF|SIBLING_OF|ADOPTED_CHILD_OF|ADOPTIVE_PARENT_OF|FOSTER_CHILD_OF|FOSTER_PARENT_OF|MENTOR_OF|STUDENT_OF|ALLY_OF|ENEMY_OF|FRIEND_OF|SUCCESSOR_OF|PREDECESSOR_OF|BORN_IN|BORN_AT|DIED_AT|WORKED_IN|ACTIVE_IN|ACHIEVED|INFLUENCED_BY|PARTICIPATED_IN|HAS_ROLE|BELONGS_TO_DYNASTY|HAS_NAME",
   "dynasty": "<tên triều đại nếu có>"
 }}
 """

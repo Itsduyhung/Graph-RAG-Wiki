@@ -145,6 +145,87 @@ class QueryPipeline:
         "tên gọi khác": "alias",
         "biệt danh": "nickname",
         "nêu đầy đủ": "full_name",
+        # === NEW: Marriage/Spouse intents ===
+        "vợ": "SPOUSE_OF",
+        "chồng": "SPOUSE_OF",
+        "bạn đời": "SPOUSE_OF",
+        "vợ chồng": "SPOUSE_OF",
+        "kết hôn": "SPOUSE_OF",
+        "cưới": "SPOUSE_OF",
+        "lấy vợ": "SPOUSE_OF",
+        "lấy chồng": "SPOUSE_OF",
+        "thành hôn": "SPOUSE_OF",
+        "hôn nhân": "SPOUSE_OF",
+        "tái hôn": "SPOUSE_OF",
+        "tái giá": "SPOUSE_OF",
+        "tòng phu": "SPOUSE_OF",
+        "cầu nương": "SPOUSE_OF",
+        "tỷ muội": "SPOUSE_OF",
+        "phụ quân": "SPOUSE_OF",
+        "phu quân": "SPOUSE_OF",
+        "phu nhân": "SPOUSE_OF",
+        "thê tử": "SPOUSE_OF",
+        "nửa kia": "SPOUSE_OF",
+        
+        # === NEW: Child/Children relationships ===
+        # Con đẻ / Con ruột
+        "con cái": "CHILD_OF",
+        "con đẻ": "CHILD_OF",
+        "con ruột": "CHILD_OF",
+        "con em": "CHILD_OF",
+        "con lệ": "CHILD_OF",
+        "hậu duệ": "CHILD_OF",
+        "nòi giống": "CHILD_OF",
+        "dòng dõi": "CHILD_OF",
+        "thế hệ sau": "CHILD_OF",
+        "con cháu": "CHILD_OF",
+        "huyết thống": "CHILD_OF",
+        "tôi tớ": "CHILD_OF",
+        "con kế": "CHILD_OF",
+        "con dâu": "CHILD_OF",
+        "con rể": "CHILD_OF",
+        "con trai": "CHILD_OF",
+        "con gái": "CHILD_OF",
+        "các con": "CHILD_OF",
+        "những con": "CHILD_OF",
+        
+        # Con nuôi / Adopted children
+        "con nuôi": "ADOPTED_CHILD_OF",
+        "nhận nuôi": "ADOPTED_CHILD_OF",
+        "được nuôi": "ADOPTED_CHILD_OF",
+        "con nhân": "ADOPTED_CHILD_OF",
+        "con yêu": "ADOPTED_CHILD_OF",
+        "con trai nuôi": "ADOPTED_CHILD_OF",
+        "con gái nuôi": "ADOPTED_CHILD_OF",
+        
+        # Con dâu/rể nuôi / Foster children (contextual - only when asking about foster relationships)
+        "con dâu nuôi": "FOSTER_CHILD_OF",
+        "con rể nuôi": "FOSTER_CHILD_OF",
+        
+        # === NEW: Parent relationships (expanded) ===
+        "cha mẹ": "PARENT_OF",
+        "cha": "PARENT_OF",
+        "mẹ": "PARENT_OF",
+        "ba": "PARENT_OF",
+        "má": "PARENT_OF",
+        "bậc cha mẹ": "PARENT_OF",
+        "bố mẹ": "PARENT_OF",
+        "bố": "PARENT_OF",
+        "phụ thân": "PARENT_OF",
+        "mẫu thân": "PARENT_OF",
+        "mẹ kế": "PARENT_OF",
+        "cha kế": "PARENT_OF",
+        
+        # Adoptive parents (matches DB relationship type)
+        "cha nuôi": "ADOPTIVE_PARENT_OF",
+        "mẹ nuôi": "ADOPTIVE_PARENT_OF",
+        
+        # Foster/Step parents (new relationship types)
+        "cha dượng": "FOSTER_PARENT_OF",
+        "mẹ dượng": "FOSTER_PARENT_OF",
+        
+        "con của": "PARENT_OF",
+        "cha của": "PARENT_OF",
         # Relationship intents
         "đánh": "ACHIEVED",
         "chỉ huy": "PARTICIPATED_IN",
@@ -287,13 +368,40 @@ class QueryPipeline:
         "tiến sĩ": ["TS", "PhD", "bác sĩ", "chủ tịch", "học vị"],
 
         # === Gia đình / Quan hệ ===
-        "vợ": ["phu nhân", "thê tử", "bầu bạn", "người vợ", "bạn đời"],
-        "chồng": ["phu quân", "phu nhân", "bầu bạn", "người chồng", "bạn đời"],
-        "con": ["hậu duệ", "huyết thống", "đời sau", "con cháu", "nòi giống"],
-        "cha": ["phụ thân", "ông", "tổ phụ", "bố", "ba"],
-        "mẹ": ["mẫu thân", "bà", "tổ mẫu", "má", "u"],
-        "anh em": ["đệ tử", "huynh đệ", "bằng hữu", "bạn bè"],
-        "thân": ["bạn thân", "hảo hữu", "tri kỷ", "bằng hữu"],
+        "vợ": ["phu nhân", "thê tử", "bầu bạn", "người vợ", "bạn đời", "vợ cũ", "vợ thứ", "nửa kia", "cầu nương", "nương nương", "hoàng hậu", "thứ thác"],
+        "chồng": ["phu quân", "phu nhân", "bầu bạn", "người chồng", "bạn đời", "chồng cũ", "chồng thứ", "nửa kia", "tỷ muội", "hoàng đế", "vua"],
+        "kết hôn": ["cưới", "thành hôn", "lấy vợ", "lấy chồng", "kết duyên", "kết giao", "cưới vợ", "tòng phu", "tòng phu chi thể", "yên chiêu", "yên ủi"],
+        "cưới": ["kết hôn", "thành hôn", "lấy vợ", "lấy chồng", "kết duyên", "kết giao", "tòng phu", "hôn sự"],
+        "tái hôn": ["tái giá", "lấy lại", "cưới lại", "hôn nhân thứ hai", "cưới thêm", "lập gia đình lần thứ hai"],
+        "tái giá": ["tái hôn", "lấy lại", "cưới lại", "hôn nhân thứ hai", "cưới tái", "bước vào hôn nhân lần thứ hai"],
+        "hôn nhân": ["cưới", "hôn sự", "duyên số", "kết duyên", "hôn giới", "duyên nợ", "tình yêu"],
+        "vợ chồng": ["hôn nhân", "danh chính", "duyên số", "bạn đời", "nửa kia", "hai người một nhà"],
+        "con cái": ["con em", "hậu duệ", "nòi giống", "dòng dõi", "con đẻ", "con lệ", "con nuôi", "con kế", "con trai", "con gái", "các con", "những con"],
+        "con em": ["con cái", "hậu duệ", "nòi giống", "con đẻ", "thế hệ sau", "con trai", "con gái", "con ruột"],
+        "con": ["hậu duệ", "huyết thống", "đời sau", "con cháu", "nòi giống", "con đẻ", "con lệ", "con nuôi", "con kế", "con trai", "con gái"],
+        "con đẻ": ["con ruột", "con em", "con trai", "con gái", "huyết thống"],
+        "con ruột": ["con đẻ", "con em", "huyết thống", "nòi giống"],
+        "con nuôi": ["nhận nuôi", "được nuôi", "nuôi như con", "con nhân", "con yêu", "con trai nuôi", "con gái nuôi"],
+        "con lệ": ["con nuôi", "con kế", "con của vợ/chồng"],
+        "con kế": ["con lệ", "con nuôi", "con cũ"],
+        "con trai": ["con trai nuôi", "con trai ruột", "con trai đẻ", "quý tử", "hoàng tử"],
+        "con gái": ["con gái nuôi", "con gái ruột", "con gái đẻ", "nữ công chúa", "công chúa"],
+        "hậu duệ": ["con cái", "nòi giống", "dòng dõi", "thế hệ sau", "con em"],
+        "nòi giống": ["dòng dõi", "huyết thống", "con em", "hậu duệ", "con cháu"],
+        "dòng dõi": ["nòi giống", "huyết thống", "hậu duệ", "gia tộc"],
+        
+        "cha": ["phụ thân", "ông", "tổ phụ", "bố", "ba", "bố già", "tỷ phụ", "cha ruột", "cha đẻ", "cha nuôi", "cha kế"],
+        "mẹ": ["mẫu thân", "bà", "tổ mẫu", "má", "u", "mẹ kế", "côi mẹ", "mẹ ruột", "mẹ đẻ", "mẹ nuôi"],
+        "cha mẹ": ["bố mẹ", "cha mẹ ruột", "cha mẹ đẻ", "bậc cha mẹ", "phụ mẫu"],
+        "bố mẹ": ["cha mẹ", "bố mẹ ruột", "bố mẹ đẻ", "bậc cha mẹ"],
+        "bố": ["ba", "cha", "phụ thân", "bố ruột", "bố đẻ", "bố kế"],
+        "mẹ kế": ["mẹ nuôi", "mẹ thứ", "mẹ sau"],
+        "cha kế": ["cha nuôi", "cha thứ", "cha sau"],
+        "cha nuôi": ["cha dậu", "cha thay", "người nuôi dạy"],
+        "mẹ nuôi": ["mẹ thay", "mẹ dậu", "người nuôi dạy"],
+        "anh em": ["đệ tử", "huynh đệ", "bằng hữu", "bạn bè", "anh chị em", "em trai", "em gái"],
+        "thân": ["bạn thân", "hảo hữu", "tri kỷ", "bằng hữu", "bạn thân thích"],
+        "con người": ["nhân vật", "ân nhân", "người", "cá nhân", "từng người"],
 
         # === Địa điểm / Nơi chốn ===
         "sinh ra": ["xuất thân", "quê quán", "bản quán", " quê", " quê hương", "nơi sinh"],
@@ -574,6 +682,7 @@ class QueryPipeline:
         """
         NEW: Search database for any known person names mentioned in the question.
         This helps catch cases like "việc Dục Đức bị phế truất" where Dục Đức is mid-sentence.
+        Also handles partial names like "Chiêu Hoàng" → "Lý Chiêu Hoàng"
         Returns list of person names found, ordered by relevance.
         """
         if not self.graph_db or not self.graph_db.driver:
@@ -590,22 +699,52 @@ class QueryPipeline:
                 
                 found_names = []
                 question_lower = question.lower()
+                record_count = 0
                 
                 for record in result:
-                    name = record.get("name", "").strip()
-                    full_name = record.get("full_name", "").strip()
-                    other_name = record.get("other_name", "").strip()
+                    record_count += 1
+                    name = (record.get("name") or "").strip()
+                    full_name = (record.get("full_name") or "").strip()
+                    other_name = (record.get("other_name") or "").strip()
                     
-                    # Check if any name appears in question
+                    # Check if any name appears in question (exact match or as suffix)
+                    found_match = False
+                    match_specificity = 0  # Track how specific the match is
+                    
                     for candidate_name in [name, full_name, other_name]:
-                        if candidate_name and len(candidate_name) > 2:
-                            if candidate_name.lower() in question_lower:
-                                found_names.append(candidate_name)
+                        if not candidate_name or len(candidate_name) <= 2:
+                            continue
+                            
+                        candidate_lower = candidate_name.lower()
+                        
+                        # Try exact match first (e.g., "lý chiêu hoàng" in question)
+                        if candidate_lower in question_lower:
+                            found_names.append((candidate_name, 1000 + len(candidate_lower.split())))  # Exact match = highest priority
+                            found_match = True
+                            break
+                        
+                        # Try suffix match for compound names (e.g., "chiêu hoàng" matches "lý chiêu hoàng")
+                        # Split by spaces and check if last N words appear in question
+                        name_words = candidate_lower.split()
+                        for i in range(1, len(name_words)):
+                            suffix = " ".join(name_words[i:])  # "chiêu hoàng", "hoàng", etc.
+                            if len(suffix) > 2 and suffix in question_lower:
+                                # Score = number of words in suffix (longer suffix = more specific)
+                                specificity = len(suffix.split())
+                                found_names.append((candidate_name, specificity))
+                                found_match = True
                                 break
+                        if found_match:
+                            break
                 
-                # Return names ordered by length (longer = more specific)
-                return sorted(found_names, key=len, reverse=True)
+                # Sort by specificity DESC (higher = more specific), then by length DESC
+                found_names.sort(key=lambda x: (x[1], len(x[0])), reverse=True)
+                result_names = [name for name, _ in found_names]
+                
+                # Return names ordered by specificity (not just length!)
+                return result_names
         except Exception as e:
+            print(f"  [ERROR] _find_person_names_in_question failed: {str(e)[:100]}")
             return []
 
     def _extract_keywords(self, question: str) -> List[str]:
@@ -726,7 +865,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         prompt = CYPHER_DETECTION_PROMPT.format(question=question_lower)
         
         try:
-            response = call_llm(prompt, model="gemini-flash-lite", temperature=0.1)  # Low temperature for consistency
+            response = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=0.1)  # Low temperature for consistency
             # Parse JSON response
             import json
             result = json.loads(response.strip())
@@ -1025,8 +1164,9 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         candidates = []
         seen_ids = set()
 
-        # === RELATIONSHIP-BASED SEARCH cho SUCCESSOR_OF/PREDECESSOR_OF ===
-        relationship_intents = ["SUCCESSOR_OF", "PREDECESSOR_OF"]
+        # === RELATIONSHIP-BASED SEARCH for all relationship intents ===
+        relationship_intents = ["SUCCESSOR_OF", "PREDECESSOR_OF", "ADOPTED_CHILD_OF", "ADOPTIVE_PARENT_OF", 
+                               "FOSTER_CHILD_OF", "FOSTER_PARENT_OF"]
         if intent in relationship_intents:
             rel_candidates = self._search_relationship_for_entity(entity, intent)
             print(f"  [Relationship] Found {len(rel_candidates)} relationship candidates for {intent}")
@@ -1585,9 +1725,26 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             rel_result = retriever.retrieve_by_relationship_type(entity, intent)
             candidates = []
             
+            targets_with_year = []  # For SPOUSE_OF filtering
+            
             for target in rel_result.get("targets", []):
                 target_props = target.get("target", {})
+                rel_props = target.get("relationship_properties", {})
                 tid = target_props.get("id") or target_props.get("name", "")
+                
+                # === FIX: For SPOUSE_OF, prioritize and limit to current marriages ===
+                if intent.upper() == "SPOUSE_OF":
+                    # Collect spouses with start_year (current/documented marriages)
+                    if rel_props.get("start_year"):
+                        targets_with_year.append({
+                            "target": target_props,
+                            "rel_props": rel_props,
+                            "tid": tid,
+                            "direction": target.get("direction", "outgoing"),
+                            "start_year": rel_props.get("start_year", 0)
+                        })
+                    continue  # Skip ex-spouses without start_year
+                
                 if tid:
                     candidates.append({
                         "id": tid,
@@ -1597,8 +1754,26 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                         "score": 2.5,
                         "source": f"relationship:{intent}",
                         "relationship": intent,
-                        "direction": target.get("direction", "outgoing")
+                        "direction": target.get("direction", "outgoing"),
+                        "relationship_properties": rel_props
                     })
+            
+            # For SPOUSE_OF: only add the MOST RECENT spouse (highest start_year)
+            if intent.upper() == "SPOUSE_OF" and targets_with_year:
+                # Sort by start_year DESC and take the first (most recent)
+                targets_with_year.sort(key=lambda x: x["start_year"], reverse=True)
+                most_recent = targets_with_year[0]
+                candidates.append({
+                    "id": most_recent["tid"],
+                    "type": "Person",
+                    "name": most_recent["target"].get("name", ""),
+                    "properties": most_recent["target"],
+                    "score": 2.5,
+                    "source": "relationship:SPOUSE_OF",
+                    "relationship": "SPOUSE_OF",
+                    "direction": most_recent["direction"],
+                    "relationship_properties": most_recent["rel_props"]
+                })
             
             return candidates
         except Exception as e:
@@ -2290,7 +2465,12 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             return f"{target_name} (là người nuôi dạy/chăm sóc)"
         
         if rel_type.upper() == "SPOUSE_OF":
-            return f"{target_name} (là vợ/chồng của p)"
+            # Show marriage year if available to distinguish current vs ex-spouse
+            start_year = rel_props.get("start_year") if rel_props else None
+            if start_year:
+                return f"{target_name} (là vợ/chồng, năm {start_year})"
+            else:
+                return f"{target_name} (là vợ/chồng cũ)"
         
         if rel_type.upper() == "SIBLING_OF":
             rel_subtype = rel_props.get("relationship_type", "")
@@ -2469,7 +2649,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
 
         # Stream answer in real-time
         answer_text = ""
-        print("\n💬 Trả lời (real-time):\n", end="", flush=True)
+        print("  📡 Streaming response from LLM...\n")
         
         for chunk in self.answer_generator.generate_answer_stream(
             question=query_info["original_question"],
@@ -2564,10 +2744,11 @@ Gợi ý:
 
         # ===== 5. ANSWER GENERATION =====
         print("\n[5/5] Answer Generation (LLM)...")
+        print("  🔗 Calling LLM API with streaming...")
         answer = self._generate_answer(query_info, filtered_context)
         
         print(f"\n{'='*60}")
-        print(f"✅ Answer generated")
+        print(f"✅ Answer generated successfully")
         print(f"{'='*60}\n")
         
         # Find the main Person candidate (highest score)
