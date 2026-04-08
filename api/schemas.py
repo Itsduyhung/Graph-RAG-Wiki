@@ -13,6 +13,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     """Response schema for query endpoint."""
     answer: str = Field(..., description="Generated answer")
+    active_person: Optional[str] = Field(None, description="Active person being discussed")
     context_used: Optional[str] = Field(None, description="Context used for answer")
     intent: Optional[Dict[str, Any]] = Field(None, description="Extracted intent")
 

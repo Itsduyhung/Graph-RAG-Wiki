@@ -47,10 +47,12 @@ if prompt:
         
         try:
             # Stream chunks directly from answer_generator
+            import os
+            default_temp = float(os.getenv('LLM_TEMPERATURE', '0.1'))
             for chunk in pipeline.answer_generator.generate_answer_stream(
                 question=query_info["original_question"],
                 context=filtered_context,
-                temperature=0.1
+                temperature=default_temp
             ):
                 answer_text += chunk
                 # Update UI in real-time

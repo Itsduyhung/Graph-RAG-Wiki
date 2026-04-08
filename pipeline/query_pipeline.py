@@ -2572,7 +2572,16 @@ Gợi ý:
 # STANDALONE FUNCTION (for streamlit)
 # =============================================================================
 
-def ask_agent(question: str) -> str:
-    """Standalone function for Streamlit UI."""
+def ask_agent(question: str) -> dict:
+    """Standalone function for API/Chat - returns dict with answer and active_person."""
     pipeline = QueryPipeline()
-    return pipeline.process_query(question)
+    result = pipeline.process_query(question)
+    
+    # Extract answer and active_person if appended
+    if "\n\nActive person:" in result:
+        parts = result.split("\n\nActive person:")
+        answer = parts[0].strip()
+        active_person = parts[1].strip() if len(parts) > 1 else None
+        return {"answer": answer, "active_person": active_person}
+    else:
+        return {"answer": result, "active_person": None}
