@@ -94,7 +94,7 @@ def call_llm(
             
             # 503 (Service Unavailable) and 524 (Gateway Timeout) - retry with exponential backoff
             if status_code in [503, 524]:
-                wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s, 16s, 32s (exponential)
+                wait_time = (2 ** attempt) * 2  # 15s, 30s, 60s, 120s (exponential)
                 error_name = "Service Unavailable (503)" if status_code == 503 else "Gateway Timeout (524)"
                 print(f"[RETRY] YEScale {error_name}, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
                 time.sleep(wait_time)
@@ -239,7 +239,7 @@ def call_llm_stream(
                     status_code = 503
             
             if status_code in [503, 524]:
-                wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s, 16s, 32s (exponential)
+                wait_time = (2 ** attempt) * 15  # 15s, 30s, 60s, 120s (exponential)
                 error_name = "Service Unavailable (503)" if status_code == 503 else "Gateway Timeout (524)"
                 print(f"[RETRY] YEScale {error_name}, attempt {attempt + 1}/{YESCALE_MAX_RETRIES}, waiting {wait_time}s...")
                 time.sleep(wait_time)
