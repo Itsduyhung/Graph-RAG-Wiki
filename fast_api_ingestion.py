@@ -982,9 +982,12 @@ async def debug_extract(
 
 @app.post("/chat", response_model=QueryResponse)
 async def chat(request: QueryRequest):
-    """Chat endpoint for Graph RAG queries."""
-    answer = ask_agent(request.question)
-    return QueryResponse(answer=answer)
+    """Chat endpoint for Graph RAG queries with active person tracking."""
+    result = ask_agent(request.question)
+    return QueryResponse(
+        answer=result.get("answer", ""),
+        active_person=result.get("active_person", None)
+    )
 
 if __name__ == "__main__":
     import uvicorn
