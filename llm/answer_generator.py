@@ -101,7 +101,23 @@ VÍ DỤ MINH HỌA:
 ✅ ĐÚNG: "Đào Cam Mộc là quan đại thần, có công lớn trong việc đưa Lý Công Uẩn lên ngôi hoàng đế. Lê Đại Hành, vua nhà Tiền Lê, cũng trọng dụng Lý Công Uẩn."
 
 === CÂU TRẢ LỜI ===
-(trả lời hoàn toàn bằng tiếng Việt, rõ ràng, tự nhiên, dễ hiểu - BẮT ĐẦU NGAY TỪ NỘI DUNG CHÍNH, KHÔNG MỞ BẰNG "KHÔNG CÓ")"""
+(trả lời hoàn toàn bằng tiếng Việt, rõ ràng, tự nhiên, dễ hiểu - BẮT ĐẦU NGAY TỪ NỘI DUNG CHÍNH, KHÔNG MỞ BẰNG "KHÔNG CÓ")
+
+=== RULE 6: LUÔN THÊM ACTIVE PERSON VÀO CUỐI RESPONSE ===
+✅ BẮCCBUỘC phải thêm active person ở cuối mỗi câu trả lời theo format:
+   Active person: [entity_name]
+
+🔴 QUY TẮC:
+- Nếu câu hỏi có entity cụ thể (tên nhân vật, địa danh, sự kiện) → PHẢI thêm "Active person: [entity]" ở cuối
+- Ví dụ:
+  * Câu hỏi: "Hàm Nghi sinh năm nào?"
+  * Response: "Hàm Nghi sinh năm 1871.\n\nActive person: Hàm Nghi"
+  
+  * Câu hỏi: "Tên thật của Bảo Đại?"
+  * Response: "Tên thật của Bảo Đại là Nguyễn Phúc Vĩnh Thụy.\n\nActive person: Bảo Đại"
+
+- Format chính xác: "\n\nActive person: [tên]" (hai dòng trống rồi mới viết)
+- KHÔNG bao giờ quên thêm này!"""
 
 
 class AnswerGenerator:
@@ -155,7 +171,8 @@ class AnswerGenerator:
         self,
         question: str,
         context: str,
-        temperature: Optional[float] = None
+        temperature: Optional[float] = None,
+        entity: Optional[str] = None
     ):
         """
         Generate answer with streaming - yields text chunks in real-time.
@@ -164,6 +181,7 @@ class AnswerGenerator:
             question: User question
             context: Retrieved context from graph
             temperature: Temperature cho LLM generation
+            entity: Active entity/person to append at the end
 
         Yields:
             Text chunks as they arrive from the API
@@ -184,8 +202,14 @@ class AnswerGenerator:
 
         try:
             # Stream the answer in real-time
+            answer_so_far = ""
             for chunk in call_llm_stream(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.1):
                 yield chunk
+                answer_so_far += chunk
+            
+            # Append active person at the end if entity is provided and not already present
+            if entity and "\n\nActive person:" not in answer_so_far:
+                yield f"\n\nActive person: {entity}"
         except Exception as e:
             yield f"\n❌ Lỗi khi tạo câu trả lời: {str(e)}"
 

@@ -2427,10 +2427,12 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         print("  📡 Streaming response from LLM...\n")
         
         default_temp = float(os.getenv('LLM_TEMPERATURE', '0.1'))
+        entity = query_info.get("entity")  # Pass entity to answer generator
         for chunk in self.answer_generator.generate_answer_stream(
             question=query_info["original_question"],
             context=context,
-            temperature=default_temp  # Temperature from env for consistency
+            temperature=default_temp,  # Temperature from env for consistency
+            entity=entity  # Add active person at the end
         ):
             print(chunk, end="", flush=True)
             answer_text += chunk
@@ -2527,25 +2529,9 @@ Gợi ý:
         print(f"✅ Answer generated successfully")
         print(f"{'='*60}\n")
         
-        # Find the main Person candidate (highest score)
-        main_person = None
-        for c in candidates:
-            if c.get('type') == 'Person':
-                main_person = c.get('name', '')
-                break
-        
-        # Append active person to answer for .NET backend to parse
-        if main_person:
-            print(f"Answer:\n{answer}\n")
-            print(f"Active person: {main_person}")
-            return f"{answer}\n\nActive person: {main_person}"
-        elif query_info.get("entity"):
-            print(f"Answer:\n{answer}\n")
-            print(f"Active person: {query_info['entity']}")
-            return f"{answer}\n\nActive person: {query_info['entity']}"
-        else:
-            print(f"Answer:\n{answer}\n")
-            return answer
+        # LLM now appends active person automatically, so just return the answer
+        print(f"Answer:\n{answer}\n")
+        return answer
 
     # =========================================================================
     # LEGACY METHODS (kept for compatibility)
