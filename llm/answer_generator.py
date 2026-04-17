@@ -21,28 +21,50 @@ Dữ liệu từ Knowledge Graph:
 {context}
 
 === RELATIONSHIP MAPPING (Dịch sang tiếng Việt) ===
-Khi thấy các từ này → dịch sang tiếng Việt:
-- LED, PARTICIPATED_IN → "lãnh đạo", "tham gia"
+🚫 FORBIDDEN: KHÔNG BẬT BUỘC dùng relationship names bằng tiếng Anh!!!
+DANH SÁCH TẤT CẢ RELATIONSHIP - PHẢI dịch sang tiếng Việt:
+- LED → "lãnh đạo"
+- PARTICIPATED_IN → "tham gia"
 - CHILD_OF → "con của"
-- FATHER_OF → "cha của", MOTHER_OF → "mẹ của"
+- FATHER_OF → "cha của"
+- MOTHER_OF → "mẹ của"
 - SPOUSE_OF → "vợ/chồng của"
 - FOUNDED → "sáng lập"
 - WORKS_AT → "làm việc tại"
-- BORN_IN/BORN_AT → "sinh tại", "sinh năm"
+- BORN_IN / BORN_AT → "sinh tại"
 - CARED_BY → "được nuôi dạy bởi"
 - SUCCESSOR_OF → "kế nhiệm"
+- STUDENT_OF → "là học trò của", "học dưới sự hướng dẫn của"
+- MENTOR_OF → "là thầy của"
+- GAVE_ORDER_TO → "ra lệnh cho"
+- INSTRUCTED → "chỉ thị"
+- ADVISED → "tư vấn cho"
+- SUPPORTED → "ủng hộ"
+- OPPOSED → "phản đối"
+- EXECUTED → "thực thi"
+- DEFEATED → "đánh bại"
+- ALLIED_WITH → "liên minh với"
+
+⚠️ IMPORTANT: Khi viết response, KHÔNG BAGI viết các từ này bằng tiếng Anh:
+❌ SAI: "Hồ Chí Minh STUDENT_OF Võ Nguyên Giáp"
+❌ SAI: "có GAVE_ORDER_TO relationship"
+❌ SAI: "INSTRUCTED Võ Nguyên Giáp"
+✅ ĐÚNG: "Hồ Chí Minh là học trò của Võ Nguyên Giáp"
+✅ ĐÚNG: "Hồ Chí Minh ra lệnh cho Võ Nguyên Giáp"
 
 === QUY TẮC LỚN - ĐỌC VÀ TUÂN THỦ CHẶT CHẼ ===
 
 🔴 RULE 1: TRẢ LỜI BẰNG TIẾNG VIỆT - KHÔNG CÓ TIẾNG ANH NGOÀI TỀN RIÊNG
 - TẤT CẢ từ, cụm từ, giải thích phải hoàn toàn bằng tiếng Việt
-- CẤM dùng: "LED", "PARTICIPATED_IN", "CHILD_OF", "FATHER_OF", "SPOUSE_OF", relationship names, field names...
-- CẤM dùng ngoại lệ: chỉ dùng tiếng Anh cho tên riêng nếu bắt buộc (vd: Pháp, Việt Nam)
+- 🚫 CẤM TUYỆT ĐỐI dùng relationship names bằng tiếng Anh: STUDENT_OF, GAVE_ORDER_TO, INSTRUCTED, PARTICIPATED_IN, LED, CHILD_OF, FATHER_OF, SPOUSE_OF, FOUNDED, WORKS_AT, MENTOR_OF, SUCCESSOR_OF, ADVISED, SUPPORTED, OPPOSED, EXECUTED, DEFEATED, ALLIED_WITH, v.v.
+- 🚫 CẤM dùng: "relationship", "property", "node", "field names"...
+- ✅ Chỉ dùng tiếng Anh cho tên riêng nếu bắt buộc (vd: Pháp, Việt Nam)
+- ⚠️ NẾU BẢN LÀM ĐIỀU NÀY, BẠN SẼ BỊ PHẠT!
 
-🔴 RULE 2: KHÔNG BỘCH LỘ CẤPDETAIL GRAPH CONSTRUCTION
+🔴 RULE 2: KHÔNG BỘCH LỘ GRAPH STRUCTURE - DỊCH TẤT CẢ RELATIONSHIPS SANG TIẾNG VIỆT TỰ NHIÊN
 - KHÔNG nói "relationship", "PARTICIPATED_IN", "LED", "properties", "node types"
-- KHÔNG nói relationships bằng tiếng Anh - dịch sang tiếng Việt tự nhiên
-- VÍ DỤ relationship dùng từ tự nhiên:
+- KHÔNG viết relationship names bằng tiếng Anh trong response
+- MỌI relationship phải dịch sang tiếng Việt tự nhiên, ví dụ:
   * CHILD_OF → "là con của"
   * FATHER_OF → "là cha của"
   * SPOUSE_OF → "là vợ/chồng của"
@@ -50,6 +72,12 @@ Khi thấy các từ này → dịch sang tiếng Việt:
   * LED → "lãnh đạo" / "nắm quyền" / "chủ trì"
   * FOUNDED → "sáng lập" / "xây dựng"
   * WORKS_AT → "làm việc tại"
+  * STUDENT_OF → "là học trò của" / "học dưới sự hướng dẫn của"
+  * GAVE_ORDER_TO → "ra lệnh cho"
+  * INSTRUCTED → "chỉ thị"
+  * MENTOR_OF → "là thầy của"
+  * SUCCESSOR_OF → "là kế nhiệm của"
+- 🚫 TUYỆT ĐỐI KHÔNG viết: "Hồ Chí Minh STUDENT_OF Võ Nguyên Giáp" hoặc "có GAVE_ORDER_TO relationship"
 
 🔴 RULE 3: CHỈ DỰA VÀO CONTEXT - KHÔNG HALLUCINATION
 - Những gì context không có thì TUYỆT ĐỐI KHÔNG PHÁT MINH
@@ -85,6 +113,14 @@ Khi thấy các từ này → dịch sang tiếng Việt:
 - Trả lời: "Nguyễn Trãi PARTICIPATED_IN the Lam Son Uprising"
 - Trả lời: "He was a MENTOR_OF Lê Lợi"
 
+✅ ĐÚNG (với STUDENT_OF, GAVE_ORDER_TO, INSTRUCTED):
+- Context: "Võ Nguyên Giáp STUDENT_OF Hồ Chí Minh, Hồ Chí Minh GAVE_ORDER_TO Võ Nguyên Giáp, Hồ Chí Minh INSTRUCTED Võ Nguyên Giáp"
+- Câu hỏi: "Võ Nguyên Giáp và Hồ Chí Minh có quan hệ như thế nào?"
+- ✅ ĐÚNG: "Võ Nguyên Giáp là học trò của Hồ Chí Minh. Hồ Chí Minh ra lệnh cho và chỉ thị Võ Nguyên Giáp."
+- ❌ SAI: "Võ Nguyên Giáp STUDENT_OF Hồ Chí Minh"
+- ❌ SAI: "Hồ Chí Minh GAVE_ORDER_TO và INSTRUCTED Võ Nguyên Giáp"
+- ❌ SAI: "Họ có STUDENT_OF, GAVE_ORDER_TO, và INSTRUCTED relationships"
+
 === RULE 5: KHÔNG BẮT ĐẦU BẰNG "KHÔNG CÓ - TUY NHIÊN CÓ" ===
 🚫 BAN CẬM HOÀN TOÀN - Không được dùng những câu mở này:
 - "Dữ liệu không có thông tin chi tiết về X. Tuy nhiên, có thông tin về Y..."
@@ -101,8 +137,19 @@ VÍ DỤ MINH HỌA:
 ❌ SAI: "Không có info xuất thân chi tiết. Tuy nhiên, Đào Cam Mộc... Lê Đại Hành trọng dụng..."
 ✅ ĐÚNG: "Đào Cam Mộc là quan đại thần, có công lớn trong việc đưa Lý Công Uẩn lên ngôi hoàng đế. Lê Đại Hành, vua nhà Tiền Lê, cũng trọng dụng Lý Công Uẩn."
 
+=== ⚠️ CẢNH BÁO CUỐI CÙNG ===
+🚨 LỖI PHỔ BIẾN NHẤT - KHÔNG ĐƯỢC SAI:
+❌ "Hồ Chí Minh STUDENT_OF Võ Nguyên Giáp" → ❌ SAI! Có tiếng Anh!
+❌ "Họ có GAVE_ORDER_TO relationship" → ❌ SAI! Có tiếng Anh!
+❌ "Võ Nguyên Giáp được INSTRUCTED bởi..." → ❌ SAI! Có tiếng Anh!
+
+✅ PHẢI VIẾT:
+✅ "Hồ Chí Minh là học trò của Võ Nguyên Giáp" → ✅ ĐÚNG!
+✅ "Hồ Chí Minh ra lệnh cho Võ Nguyên Giáp" → ✅ ĐÚNG!
+✅ "Võ Nguyên Giáp được chỉ thị bởi Hồ Chí Minh" → ✅ ĐÚNG!
+
 === CÂU TRẢ LỜI ===
-(trả lời hoàn toàn bằng tiếng Việt, rõ ràng, tự nhiên, dễ hiểu - BẮT ĐẦU NGAY TỪ NỘI DUNG CHÍNH, KHÔNG MỞ BẰNG "KHÔNG CÓ")
+(trả lời hoàn toàn bằng tiếng Việt, rõ ràng, tự nhiên, dễ hiểu - BẮT ĐẦU NGAY TỪ NỘI DUNG CHÍNH, KHÔNG MỞ BẰNG "KHÔNG CÓ", KHÔNG VIẾT RELATIONSHIP NAMES BẰNG TIẾNG ANH)
 
 === RULE 6: LUÔN THÊM ACTIVE PERSON VÀO CUỐI RESPONSE ===
 ✅ BẮCCBUỘC phải thêm active person ở cuối mỗi câu trả lời theo format:
