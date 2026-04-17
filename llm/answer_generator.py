@@ -123,18 +123,28 @@ VÍ DỤ MINH HỌA:
 
 def clean_markdown_format(text: str) -> str:
     """
-    Clean markdown formatting từ response.
-    - Loại bỏ dấu * ở đầu dòng khi không cần thiết
+    Clean markdown formatting từ response - LOẠI BỎ TẤT CẢ ASTERISK.
+    - Loại bỏ **text** (bold markdown)
+    - Loại bỏ *text* (italic markdown)
+    - Loại bỏ * ở đầu dòng (bullet list)
     - Giữ lại \n để xuống dòng
-    - Xử lý khoảng trắng thừa
     """
-    # Loại bỏ "* " ở đầu dòng và thay bằng dòng mới
-    # Pattern: "\n* " → "\n"
+    # 1. Loại bỏ **text** (bold) → text
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    
+    # 2. Loại bỏ *text* (italic) → text
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    
+    # 3. Loại bỏ "* " ở đầu dòng → dòng mới
+    # Pattern: "\n* " hoặc "\n*   " (nhiều khoảng trắng)
     text = re.sub(r'\n\s*\*\s+', '\n', text)
     
-    # Loại bỏ "* " ở đầu response (nếu có)
+    # 4. Loại bỏ "* " ở đầu response (nếu có)
     if text.startswith('* '):
         text = text[2:].lstrip()
+    
+    # 5. Loại bỏ dấu * đơn lẻ còn sót lại
+    text = text.replace('*', '')
     
     return text
 
