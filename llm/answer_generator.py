@@ -1,6 +1,7 @@
 # llm/answer_generator.py
 """Answer generation from retrieved context."""
 import os
+import re
 from typing import Dict, Any, Optional
 from .llm_client import call_llm, call_llm_stream
 from .prompt_templates import ANSWER_PROMPT, CONTEXT_SYNTHESIS_PROMPT
@@ -120,6 +121,24 @@ VÍ DỤ MINH HỌA:
 - KHÔNG bao giờ quên thêm này!"""
 
 
+def clean_markdown_format(text: str) -> str:
+    """
+    Clean markdown formatting từ response.
+    - Loại bỏ dấu * ở đầu dòng khi không cần thiết
+    - Giữ lại \n để xuống dòng
+    - Xử lý khoảng trắng thừa
+    """
+    # Loại bỏ "* " ở đầu dòng và thay bằng dòng mới
+    # Pattern: "\n* " → "\n"
+    text = re.sub(r'\n\s*\*\s+', '\n', text)
+    
+    # Loại bỏ "* " ở đầu response (nếu có)
+    if text.startswith('* '):
+        text = text[2:].lstrip()
+    
+    return text
+
+
 class AnswerGenerator:
     """Generate answers from retrieved graph context."""
 
@@ -143,7 +162,7 @@ class AnswerGenerator:
             temperature: Temperature cho LLM generation
 
         Returns:
-            Generated answer
+            Generated answer (with cleaned formatting)
         """
         if not context:
             return "❌ Không tìm thấy dữ liệu liên quan."
@@ -163,7 +182,8 @@ class AnswerGenerator:
             default_temp = float(os.getenv('LLM_TEMPERATURE', '0.1'))
             # Use timeout=30s for full context (verifying all search results)
             answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or default_temp, timeout=30)
-            return answer
+            # Clean markdown formatting from the answer
+            return clean_markdown_format(answer)
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"
 
@@ -184,7 +204,7 @@ class AnswerGenerator:
             entity: Active entity/person to append at the end
 
         Yields:
-            Text chunks as they arrive from the API
+            Text chunks as they arrive from the API (with cleaned formatting)
         """
         if not context:
             yield "❌ Không tìm thấy dữ liệu liên quan."
@@ -201,14 +221,20 @@ class AnswerGenerator:
         )
 
         try:
-            # Stream the answer in real-time
-            answer_so_far = ""
+            # Collect all chunks first
+            full_answer = ""
             for chunk in call_llm_stream(prompt, model="gemini-2.5-flash-lite", temperature=temperature or 0.1):
-                yield chunk
-                answer_so_far += chunk
+                full_answer += chunk
+            
+            # Clean markdown formatting from the full answer
+            cleaned_answer = clean_markdown_format(full_answer)
+            
+            # Yield the cleaned answer (could yield line by line or all at once)
+            # Yield all at once to preserve exact formatting
+            yield cleaned_answer
             
             # Append active person at the end if entity is provided and not already present
-            if entity and "\n\nActive person:" not in answer_so_far:
+            if entity and "\n\nActive person:" not in cleaned_answer:
                 yield f"\n\nActive person: {entity}"
         except Exception as e:
             yield f"\n❌ Lỗi khi tạo câu trả lời: {str(e)}"
