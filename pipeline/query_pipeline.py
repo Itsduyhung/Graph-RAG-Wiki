@@ -1928,25 +1928,35 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             return candidates
 
     def _get_all_names_for_node(self, session, node_eid: str) -> List[Dict]:
-        """Lấy tất cả Name nodes liên quan đến một node."""
+        """Lấy tất cả Name nodes liên quan - Đã fix lỗi StringArray cho dự án WikiChatbot"""
         all_names = []
         
         try:
+            # Sử dụng toString() trực tiếp trong Cypher để ép kiểu mọi giá trị 'lạ' về chuỗi
             result = session.run("""
                 MATCH (n:Name)-[r]-(p)
                 WHERE elementId(p) = $peid
-                RETURN n.value as name_value, n.name_type as name_type, type(r) as rel_type
+                RETURN toString(n.value) as name_value, 
+                    toString(n.name_type) as name_type, 
+                    type(r) as rel_type
             """, peid=node_eid)
             
             for r in result:
-                nv = r.get("name_value", "")
+                nv = r.get("name_value")
                 if nv:
+                    # Xử lý thêm nếu chuỗi bị dính dấu ngoặc vuông của mảng (ví dụ: "[Lý Thụy, Hồ Chí Minh]")
+                    if nv.startswith("[") and "," in nv:
+                        # Lấy phần tử đầu tiên bên trong mảng
+                        nv = nv.strip("[]").split(",")[0].strip("'\" ")
+
                     all_names.append({
                         "value": nv,
                         "type": r.get("name_type", ""),
                         "rel": r.get("rel_type", "")
                     })
-        except:
+        except Exception as e:
+            # Log lỗi ra để Nhân dễ debug trên server RAGDB3
+            print(f"Error in _get_all_names_for_node: {e}")
             pass
         
         return all_names
