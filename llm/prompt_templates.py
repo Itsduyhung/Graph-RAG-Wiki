@@ -1,6 +1,51 @@
 # llm/prompt_templates.py
 """Prompt templates for Graph RAG tasks."""
 
+# ===== RELATIONSHIP TRANSLATION MAPPING (Để LLM dùng khi dịch) =====
+RELATIONSHIP_TRANSLATIONS = {
+    # Family relationships - biological/natural
+    "CHILD_OF": "con của",
+    "FATHER_OF": "cha của",
+    "MOTHER_OF": "mẹ của",
+    "PARENT_OF": "cha/mẹ của",
+    "SPOUSE_OF": "vợ/chồng của",
+    "SIBLING_OF": "anh chị em của",
+    # Family relationships - adopted
+    "ADOPTED_CHILD_OF": "con nuôi của",
+    "ADOPTIVE_PARENT_OF": "cha/mẹ nuôi của",
+    # Family relationships - foster/step
+    "FOSTER_CHILD_OF": "con dâu/con rể nuôi của",
+    "FOSTER_PARENT_OF": "cha/mẹ dượng/kế của",
+    
+    # Leadership & Activities
+    "LED": "lãnh đạo",
+    "PARTICIPATED_IN": "tham gia",
+    "FOUNDED": "sáng lập",
+    "WORKS_AT": "làm việc tại",
+    "WORKS_IN": "làm việc trong",
+    "WORKED_IN": "làm việc ở",
+    
+    # Temporal & Location
+    "BORN_IN": "sinh tại",
+    "BORN_AT": "sinh năm",
+    "DIED_AT": "mất năm", 
+    "ACTIVE_IN": "hoạt động trong, thời kỳ",
+    
+    # Others
+    "MENTOR_OF": "là thầy của",
+    "STUDENT_OF": "là học trò của",
+    "ALLY_OF": "là đồng minh của",
+    "ENEMY_OF": "là kẻ thù của",
+    "FRIEND_OF": "là bạn của",
+    "SUCCESSOR_OF": "là người kế nhiệm của",
+    "PREDECESSOR_OF": "là người tiền nhiệm của",
+    "ACHIEVED": "đạt được, hoàn thành",
+    "INFLUENCED_BY": "bị ảnh hưởng bởi",
+    "BELONGS_TO_DYNASTY": "thuộc triều đại",
+    "HAS_ROLE": "có vai trò",
+    "CARED_BY": "được nuôi dạy/chăm sóc bởi",
+}
+
 INTENT_PROMPT = """
 Bạn là AI Agent trích xuất intent có cấu trúc từ câu hỏi tiếng Việt.
 Trả về DUY NHẤT JSON hợp lệ, không giải thích thêm.
@@ -46,7 +91,9 @@ Các loại Node trong Graph:
 - WikiChunk (Bài viết wiki)
 
 Các loại Relationship:
-- Quan hệ gia đình: FATHER_OF, MOTHER_OF, CHILD_OF, SPOUSE_OF, SIBLING_OF
+- Quan hệ gia đình (tự nhiên): FATHER_OF, MOTHER_OF, CHILD_OF, SPOUSE_OF, SIBLING_OF
+- Quan hệ gia đình (con nuôi): ADOPTED_CHILD_OF, ADOPTED_PARENT_OF
+- Quan hệ gia đình (dâu/rể/kế): FOSTER_CHILD_OF, FOSTER_PARENT_OF
 - Quan hệ khác: MENTOR_OF, STUDENT_OF, ALLY_OF, ENEMY_OF, FRIEND_OF, SUCCESSOR_OF
 - Quan hệ với thông tin: HAS_NAME, HAS_ROLE
 - Quan hệ về thời gian/nơi chốn: BORN_IN, BORN_AT, DIED_AT
@@ -71,31 +118,59 @@ Intent Types (Loại câu hỏi):
 - Tìm người ảnh hưởng: FIND_INFLUENCERS
 - Tìm sự kiện tham gia: FIND_EVENTS
 - Tìm triều đại: FIND_DYNASTY
-- Tìm tên gọi khác: FIND_NAME
+- Tìm người kế nhiệm: FIND_SUCCESSOR
+- Tìm người tiền nhiệm: FIND_PREDECESSOR
 - Câu hỏi chung: GENERAL_QUERY
 
 JSON format:
 {{
-  "intent": "FIND_PERSON_PROFILE|FIND_FATHER|FIND_MOTHER|FIND_PARENTS|FIND_SPOUSE|FIND_SIBLINGS|FIND_CHILDREN|FIND_BORN_IN|FIND_BORN_AT|FIND_DIED_AT|FIND_WORKED_IN|FIND_ACTIVE_IN|FIND_ACHIEVEMENTS|FIND_INFLUENCERS|FIND_EVENTS|FIND_DYNASTY|FIND_NAME|GENERAL_QUERY",
+  "intent": "FIND_PERSON_PROFILE|FIND_FATHER|FIND_MOTHER|FIND_PARENTS|FIND_SPOUSE|FIND_SIBLINGS|FIND_CHILDREN|FIND_BORN_IN|FIND_BORN_AT|FIND_DIED_AT|FIND_WORKED_IN|FIND_ACTIVE_IN|FIND_ACHIEVEMENTS|FIND_INFLUENCERS|FIND_EVENTS|FIND_DYNASTY|FIND_NAME|FIND_SUCCESSOR|FIND_PREDECESSOR|GENERAL_QUERY",
   "person": "<tên person nếu có>",
-  "relationship_type": "FATHER_OF|MOTHER_OF|CHILD_OF|SPOUSE_OF|SIBLING_OF|MENTOR_OF|STUDENT_OF|ALLY_OF|ENEMY_OF|FRIEND_OF|SUCCESSOR_OF|BORN_IN|BORN_AT|DIED_AT|WORKED_IN|ACTIVE_IN|ACHIEVED|INFLUENCED_BY|PARTICIPATED_IN|HAS_ROLE|BELONGS_TO_DYNASTY|HAS_NAME",
+  "relationship_type": "FATHER_OF|MOTHER_OF|CHILD_OF|SPOUSE_OF|SIBLING_OF|ADOPTED_CHILD_OF|ADOPTIVE_PARENT_OF|FOSTER_CHILD_OF|FOSTER_PARENT_OF|MENTOR_OF|STUDENT_OF|ALLY_OF|ENEMY_OF|FRIEND_OF|SUCCESSOR_OF|PREDECESSOR_OF|BORN_IN|BORN_AT|DIED_AT|WORKED_IN|ACTIVE_IN|ACHIEVED|INFLUENCED_BY|PARTICIPATED_IN|HAS_ROLE|BELONGS_TO_DYNASTY|HAS_NAME",
   "dynasty": "<tên triều đại nếu có>"
 }}
 """
 
 ANSWER_PROMPT = """
-Bạn là trợ lý AI.
-Chỉ sử dụng đúng thông tin trong CONTEXT dưới đây để trả lời.
-Bắt buộc trả lời bằng TIẾNG VIỆT.
+=== HƯỚNG DẪN TRẢ LỜI BẰNG TIẾNG VIỆT 100% ===
 
-Context:
+Bạn là trợ lý AI thông minh.
+TUYỆT ĐỐI TRẢ LỜI BẰNG TIẾNG VIỆT CHỈ.
+
+📋 Context từ Knowledge Graph:
 {context}
 
-Question:
-{question}
+❓ Câu hỏi: {question}
 
-Nếu context KHÔNG chứa đủ thông tin để trả lời chính xác, hãy trả về đúng câu:
-"Hiện tại mình chưa thể trả lời câu hỏi này !!"
+🔴 QUY TẮC BẮT BUỘC (KHÔNG exceptions):
+
+1️⃣ BẮTBUỘC - TRẢ LỜI BẰNG TIẾNG VIỆT 100%
+   ✅ Tất cả từ, cụm, giải thích phải tiếng Việt
+   ❌ BAN CẬM: "LED", "PARTICIPATED_IN", "CHILD_OF", "FATHER_OF", "properties", "node", "relationship"
+   ❌ BAN CẬM: "was", "is", "the", "of", "and" (tiếng Anh)
+
+2️⃣ CHỈ DỰA INFO trong Context
+   ✅ Context có → trả lời từ context
+   ❌ Context không có → "Hiện tại mình chưa tìm thấy thông tin này trong dữ liệu."
+   ✅ TUÂN THỦ 100% - không bịa, không tìm thêm, không gợi ý
+
+3️⃣ DỊCH relationships thành tiếng Việt tự nhiên:
+   Ví dụ các relationship cần dịch:
+   • LED, PARTICIPATED_IN → "lãnh đạo", "tham gia", "nắm giữ"
+   • CHILD_OF → "con của"
+   • FATHER_OF, MOTHER_OF → "cha của", "mẹ của"
+   • SPOUSE_OF → "vợ/chồng của"
+   • FOUNDED → "sáng lập", "thành lập"
+   • WORKS_AT → "làm việc tại"
+
+4️⃣ VÍ DỤ CỤ THỂ:
+   ❌ SAI: "Bảo Đại LED Quốc gia Việt Nam"
+   ✅ ĐÚNG: "Bảo Đại lãnh đạo Quốc gia Việt Nam"
+   
+   ❌ SAI: "He PARTICIPATED_IN creating Việt Nam"
+   ✅ ĐÚNG: "Ông tham gia thành lập Quốc gia Việt Nam"
+
+📝 Trả lời: (hoàn toàn tiếng Việt, rõ ràng, tự nhiên)
 """
 
 GRAPH_QUERY_PROMPT = """
@@ -132,16 +207,60 @@ Return JSON array of entities:
 """
 
 CONTEXT_SYNTHESIS_PROMPT = """
-Bạn là trợ lý AI.
-Từ graph context đã truy xuất, hãy tổng hợp câu trả lời rõ ràng và ngắn gọn.
-Bắt buộc trả lời bằng TIẾNG VIỆT.
+=== TỔNG HỢP CONTEXT → TRẢ LỜI TIẾNG VIỆT 100% ===
 
-Graph Context:
+Bạn là trợ lý AI chuyên tổng hợp thông tin từ Knowledge Graph.
+🔴 TUYỆT ĐỐI - TRẢ LỜI BẰNG TIẾNG VIỆT CHỈ, KHÔNG TIẾNG ANH
+
+📊 Dữ liệu từ Graph (cần tổng hợp):
 {graph_context}
 
-Question: {question}
+❓ Câu hỏi của người dùng: {question}
 
-Chỉ trả lời dựa trên context phía trên.
+=== CÁC RULE CẶT - KHÔNG EXCEPTIONS ===
+
+1️⃣ TRẢ LỜI TOÀN TIẾNG VIỆT
+   ❌ BAN CẬM: "LED", "PARTICIPATED_IN", "BORN_IN", "CHILD_OF", "properties", "node"
+   ❌ BAN CẬM: từ tiếng Anh
+
+2️⃣ CHỈ DÙNG THÔNG TIN TRONG CONTEXT
+   ✅ Context có → tổng hợp thành câu trả lời
+   ❌ Context không có → "Hiện tại mình chưa tìm thấy thông tin này."
+
+3️⃣ DỊCH RELATIONSHIPS thành tiếng Việt tự nhiên:
+   • LED, PARTICIPATED_IN → "lãnh đạo", "tham gia"
+   • CHILD_OF → "con của"
+   • FOUNDED → "sáng lập"
+   • WORKS_AT/WORKS_IN → "làm việc tại"
+   • BORN_IN/BORN_AT → "sinh tại", "sinh năm"
+
+📝 Trả lời tổng hợp (100% tiếng Việt, rõ ràng, tự nhiên):
+"""
+
+CYPHER_DETECTION_PROMPT = """
+Bạn là chuyên gia về Neo4j và Cypher queries. Phân tích câu hỏi tiếng Việt và quyết định xem có cần dùng Cypher query để trả lời hay không.
+
+Câu hỏi: {question}
+
+Graph Schema:
+- Nodes: Person (properties: name, reign_start_year, reign_end_year, reign_duration_years, reign_duration_days), Dynasty (properties: name, summary), Event, etc.
+- Relationships: BELONGS_TO_DYNASTY, FATHER_OF, MOTHER_OF, CHILD_OF, SPOUSE_OF, etc.
+
+QUAN TRỌNG: Chỉ trả về JSON hợp lệ, không có text khác.
+
+Nếu câu hỏi là về:
+- So sánh/đếm/aggregation (min, max, count, average) trên properties của nodes
+- Tìm người có giá trị cao nhất/thấp nhất (ví dụ: trị vì lâu nhất, ngắn nhất)
+- Đếm số lượng (ví dụ: bao nhiêu vua trong triều đại)
+- Thống kê (ví dụ: trung bình thời gian trị vì)
+
+Thì trả về {{"needs_cypher": true, "cypher_query": "MATCH ... RETURN ...", "explanation": "giải thích ngắn gọn"}}
+
+Nếu câu hỏi là về tìm kiếm thông tin cụ thể, quan hệ, hoặc không cần aggregation, trả về {{"needs_cypher": false, "cypher_query": "", "explanation": "không cần Cypher"}}
+
+Ví dụ:
+Câu hỏi: "vua nào trị vì ngắn nhất trong triều Nguyễn"
+Trả về: {{"needs_cypher": true, "cypher_query": "MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty) WHERE toLower(d.name) CONTAINS 'nguyễn' RETURN p.name ORDER BY p.reign_duration_years ASC LIMIT 1", "explanation": "tìm vua có thời gian trị vì ngắn nhất"}}
 """
 
 

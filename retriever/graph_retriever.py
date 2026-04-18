@@ -64,7 +64,7 @@ class GraphRetriever:
     def retrieve_person_full_profile(self, person_name: str) -> Dict[str, Any]:
         """
         Retrieve complete profile of a person including all relationships:
-        BORN_IN, WORKED_IN, ACTIVE_IN, ACHIEVED, INFLUENCED_BY, DESCRIBED_IN
+        BORN_IN, WORKED_IN, ACTIVE_IN, ACHIEVED, INFLUENCED_BY, DESCRIBED_IN, SUCCESSOR_OF, PREDECESSOR_OF
         
         Args:
             person_name: Name of the person
@@ -88,6 +88,8 @@ class GraphRetriever:
         OPTIONAL MATCH (p)-[:PARTICIPATED_IN]->(event:Event)
         OPTIONAL MATCH (event)-[:HAPPENED_AT]->(event_tp:TimePoint)
         OPTIONAL MATCH (p)-[:HAS_NAME]->(name:Name)
+        OPTIONAL MATCH (p)-[:SUCCESSOR_OF]->(successor:Person)
+        OPTIONAL MATCH (p)<-[:SUCCESSOR_OF]-(predecessor:Person)
         RETURN 
             p,
             collect(DISTINCT born_tp) AS born_timepoints,
@@ -103,7 +105,9 @@ class GraphRetriever:
             collect(DISTINCT company.name) AS companies_founded,
             collect(DISTINCT event) AS events,
             collect(DISTINCT event_tp) AS event_timepoints,
-            collect(DISTINCT {name: name.value, name_type: name.name_type}) AS names
+            collect(DISTINCT {name: name.value, name_type: name.name_type}) AS names,
+            collect(DISTINCT successor.name) AS successors,
+            collect(DISTINCT predecessor.name) AS predecessors
         """
         
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
@@ -132,6 +136,8 @@ class GraphRetriever:
             events = [dict(e) for e in (record["events"] or [])]
             event_tps = [dict(tp) for tp in (record["event_timepoints"] or []) if tp]
             names = [n for n in (record["names"] or []) if n and n.get("name")]
+            successors = [s for s in (record["successors"] or []) if s]
+            predecessors = [p for p in (record["predecessors"] or []) if p]
             
             context = self._build_full_person_context(
                 person_name,
@@ -150,6 +156,8 @@ class GraphRetriever:
                 died_tps,
                 event_tps,
                 names,
+                successors,
+                predecessors,
             )
             
             return {
@@ -168,6 +176,8 @@ class GraphRetriever:
                 "wiki_chunks": wiki_chunks,
                 "companies_founded": companies,
                 "events": events,
+                "successors": successors,
+                "predecessors": predecessors,
                 "context": context
             }
     
@@ -188,19 +198,26 @@ class GraphRetriever:
         """
         # Map relationship to target node type
         rel_to_node = {
-            # Family relationships
+            # Family relationships - biological/natural
             "FATHER_OF": "Person",
             "MOTHER_OF": "Person",
             "CHILD_OF": "Person",
             "SPOUSE_OF": "Person",
             "SIBLING_OF": "Person",
+            # Family relationships - adopted
+            "ADOPTED_CHILD_OF": "Person",
+            "ADOPTIVE_PARENT_OF": "Person",
+            # Family relationships - foster/stepsiblings
+            "FOSTER_CHILD_OF": "Person",
+            "FOSTER_PARENT_OF": "Person",
+            # Other relationships
             "MENTOR_OF": "Person",
             "STUDENT_OF": "Person",
             "ALLY_OF": "Person",
             "ENEMY_OF": "Person",
             "FRIEND_OF": "Person",
             "SUCCESSOR_OF": "Person",
-            # Other relationships
+            "PREDECESSOR_OF": "Person",
             "BORN_IN": "Country",
             "BORN_AT": "TimePoint",
             "DIED_AT": "TimePoint",
@@ -225,8 +242,168 @@ class GraphRetriever:
                 "error": f"Unknown relationship type: {relationship_type}"
             }
         
-        # Handle Name node differently (uses 'value' instead of 'name')
-        if target_type == "Name":
+        targets = []  # Initialize targets list
+        
+        # Handle special cases for successor/predecessor relationships
+        if relationship_type == "SUCCESSOR_OF":
+            # To find successors of person, query (person)-[:PREDECESSOR_OF]->(target)
+            query = f"""
+            MATCH (p:Person {{name: $name}})-[r:PREDECESSOR_OF]->(target:{target_type})
+            RETURN target, r, 'outgoing' AS direction
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                for record in result:
+                    target_props = dict(record["target"])
+                    rel_props = dict(record["r"])
+                    direction = record.get("direction", "outgoing")
+                    targets.append({
+                        "target": target_props,
+                        "relationship_properties": rel_props,
+                        "direction": direction
+                    })
+        elif relationship_type == "PREDECESSOR_OF":
+            # To find predecessors of person, query (person)<-[:PREDECESSOR_OF]-(target)
+            query = f"""
+            MATCH (p:Person {{name: $name}})<-[r:PREDECESSOR_OF]-(target:{target_type})
+            RETURN target, r, 'incoming' AS direction
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                for record in result:
+                    target_props = dict(record["target"])
+                    rel_props = dict(record["r"])
+                    direction = record.get("direction", "incoming")
+                    targets.append({
+                        "target": target_props,
+                        "relationship_properties": rel_props,
+                        "direction": direction
+                    })
+        elif relationship_type == "ADOPTED_CHILD_OF":
+            # To find adopted children, query both ADOPTED_CHILD_OF and ADOPTIVE_PARENT_OF (inverse)
+            query = f"""
+            MATCH (p:Person {{name: $name}})-[r:ADOPTED_CHILD_OF]->(target:Person)
+            RETURN target, r, 'outgoing' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})<-[r:ADOPTED_CHILD_OF]-(target:Person)
+            RETURN target, r, 'incoming' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})-[r:ADOPTIVE_PARENT_OF]->(target:Person)
+            RETURN target, r, 'adoptive_parent_outgoing' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})<-[r:ADOPTIVE_PARENT_OF]-(target:Person)
+            RETURN target, r, 'adoptive_parent_incoming' AS direction
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                targets = []
+                seen = set()  # Track unique targets
+                for record in result:
+                    target_props = dict(record["target"])
+                    target_name = target_props.get("name", "")
+                    if target_name not in seen:  # Avoid duplicates
+                        seen.add(target_name)
+                        rel_props = dict(record["r"])
+                        direction = record["direction"]
+                        targets.append({
+                            "target": target_props,
+                            "relationship_properties": rel_props,
+                            "direction": direction
+                        })
+        elif relationship_type == "ADOPTIVE_PARENT_OF":
+            # To find adoptive parents, query both ADOPTIVE_PARENT_OF and ADOPTED_CHILD_OF (inverse)
+            query = f"""
+            MATCH (p:Person {{name: $name}})-[r:ADOPTIVE_PARENT_OF]->(target:Person)
+            RETURN target, r, 'outgoing' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})<-[r:ADOPTIVE_PARENT_OF]-(target:Person)
+            RETURN target, r, 'incoming' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})-[r:ADOPTED_CHILD_OF]->(target:Person)
+            RETURN target, r, 'adopted_child_outgoing' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})<-[r:ADOPTED_CHILD_OF]-(target:Person)
+            RETURN target, r, 'adopted_child_incoming' AS direction
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                targets = []
+                seen = set()  # Track unique targets
+                for record in result:
+                    target_props = dict(record["target"])
+                    target_name = target_props.get("name", "")
+                    if target_name not in seen:  # Avoid duplicates
+                        seen.add(target_name)
+                        rel_props = dict(record["r"])
+                        direction = record["direction"]
+                        targets.append({
+                            "target": target_props,
+                            "relationship_properties": rel_props,
+                            "direction": direction
+                        })
+        elif relationship_type == "FOSTER_CHILD_OF":
+            # To find foster children, query both FOSTER_CHILD_OF and FOSTER_PARENT_OF (inverse)
+            query = f"""
+            MATCH (p:Person {{name: $name}})-[r:FOSTER_CHILD_OF]->(target:Person)
+            RETURN target, r, 'outgoing' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})<-[r:FOSTER_CHILD_OF]-(target:Person)
+            RETURN target, r, 'incoming' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})-[r:FOSTER_PARENT_OF]->(target:Person)
+            RETURN target, r, 'foster_parent_outgoing' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})<-[r:FOSTER_PARENT_OF]-(target:Person)
+            RETURN target, r, 'foster_parent_incoming' AS direction
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                targets = []
+                seen = set()  # Track unique targets
+                for record in result:
+                    target_props = dict(record["target"])
+                    target_name = target_props.get("name", "")
+                    if target_name not in seen:  # Avoid duplicates
+                        seen.add(target_name)
+                        rel_props = dict(record["r"])
+                        direction = record["direction"]
+                        targets.append({
+                            "target": target_props,
+                            "relationship_properties": rel_props,
+                            "direction": direction
+                        })
+        elif relationship_type == "FOSTER_PARENT_OF":
+            # To find foster parents, query both FOSTER_PARENT_OF and FOSTER_CHILD_OF (inverse)
+            query = f"""
+            MATCH (p:Person {{name: $name}})-[r:FOSTER_PARENT_OF]->(target:Person)
+            RETURN target, r, 'outgoing' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})<-[r:FOSTER_PARENT_OF]-(target:Person)
+            RETURN target, r, 'incoming' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})-[r:FOSTER_CHILD_OF]->(target:Person)
+            RETURN target, r, 'foster_child_outgoing' AS direction
+            UNION
+            MATCH (p:Person {{name: $name}})<-[r:FOSTER_CHILD_OF]-(target:Person)
+            RETURN target, r, 'foster_child_incoming' AS direction
+            """
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                result = session.run(query, name=person_name)
+                targets = []
+                seen = set()  # Track unique targets
+                for record in result:
+                    target_props = dict(record["target"])
+                    target_name = target_props.get("name", "")
+                    if target_name not in seen:  # Avoid duplicates
+                        seen.add(target_name)
+                        rel_props = dict(record["r"])
+                        direction = record["direction"]
+                        targets.append({
+                            "target": target_props,
+                            "relationship_properties": rel_props,
+                            "direction": direction
+                        })
+        elif target_type == "Name":
             query = f"""
             MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:Name)
             RETURN target, r
@@ -243,19 +420,32 @@ class GraphRetriever:
                         "relationship_properties": rel_props
                     })
         else:
-            # For family relationships, query both directions
+            # For other relationships, query both directions if family relationship
             family_rels = {"FATHER_OF", "MOTHER_OF", "CHILD_OF", "SPOUSE_OF", "SIBLING_OF", 
-                          "MENTOR_OF", "STUDENT_OF", "ALLY_OF", "ENEMY_OF", "FRIEND_OF", "SUCCESSOR_OF"}
+                          "MENTOR_OF", "STUDENT_OF", "ALLY_OF", "ENEMY_OF", "FRIEND_OF"}
             
             if relationship_type in family_rels:
                 # Bidirectional query for family relationships
-                query = f"""
-                MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:{target_type})
-                RETURN target, r, 'outgoing' AS direction
-                UNION
-                MATCH (p:Person {{name: $name}})<-[r:{relationship_type}]-(target:{target_type})
-                RETURN target, r, 'incoming' AS direction
-                """
+                # For SPOUSE_OF, prioritize by start_year (newer = current marriage)
+                # Use CASE to prioritize non-NULL start_year values first
+                if relationship_type == "SPOUSE_OF":
+                    query = f"""
+                    MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:{target_type})
+                    RETURN target, r, 'outgoing' AS direction
+                    ORDER BY (CASE WHEN r.start_year IS NOT NULL THEN 0 ELSE 1 END), r.start_year DESC, target.name
+                    UNION
+                    MATCH (p:Person {{name: $name}})<-[r:{relationship_type}]-(target:{target_type})
+                    RETURN target, r, 'incoming' AS direction
+                    ORDER BY (CASE WHEN r.start_year IS NOT NULL THEN 0 ELSE 1 END), r.start_year DESC, target.name
+                    """
+                else:
+                    query = f"""
+                    MATCH (p:Person {{name: $name}})-[r:{relationship_type}]->(target:{target_type})
+                    RETURN target, r, 'outgoing' AS direction
+                    UNION
+                    MATCH (p:Person {{name: $name}})<-[r:{relationship_type}]-(target:{target_type})
+                    RETURN target, r, 'incoming' AS direction
+                    """
                 with self.graph_db.driver.session(database=self.graph_db.database) as session:
                     result = session.run(query, name=person_name)
                     targets = []
@@ -358,6 +548,8 @@ class GraphRetriever:
         died_timepoints: List[Dict[str, Any]],
         event_timepoints: List[Dict[str, Any]],
         names: List[Dict[str, Any]] = None,
+        successors: List[str] = None,
+        predecessors: List[str] = None,
     ) -> str:
         """Build comprehensive context string for person profile."""
         names = names or []
@@ -391,6 +583,12 @@ class GraphRetriever:
 
         if dynasties:
             lines.append(f"Dynasties: {', '.join(dynasties)}")
+
+        if successors:
+            lines.append(f"Successors: {', '.join(successors)}")
+
+        if predecessors:
+            lines.append(f"Predecessors: {', '.join(predecessors)}")
 
         # Names (HAS_NAME relationships)
         if names:
@@ -477,25 +675,37 @@ class GraphRetriever:
         """Build context string for specific relationship in Vietnamese."""
         # Map relationship types to Vietnamese
         rel_to_vietnamese = {
+            # Family relationships - biological/natural
             "FATHER_OF": "cha",
             "MOTHER_OF": "mẹ", 
             "CHILD_OF": "con",
             "SPOUSE_OF": "vợ/chồng",
             "SIBLING_OF": "anh chị em",
+            # Family relationships - adopted
+            "ADOPTED_CHILD_OF": "con nuôi",
+            "ADOPTIVE_PARENT_OF": "cha/mẹ nuôi của",
+            # Family relationships - foster/step
+            "FOSTER_CHILD_OF": "con dâu/con rể nuôi",
+            "FOSTER_PARENT_OF": "cha/mẹ dượng/kế",
+            # Other family/personal
             "MENTOR_OF": "thầy/mentor",
             "STUDENT_OF": "học trò",
             "ALLY_OF": "đồng minh",
             "ENEMY_OF": "kẻ thù",
             "FRIEND_OF": "bạn",
             "SUCCESSOR_OF": "người kế thừa",
+            "PREDECESSOR_OF": "người tiền nhiệm",
+            # Temporal & Location
             "BORN_IN": "sinh tại",
             "BORN_AT": "sinh năm",
             "DIED_AT": "mất năm",
             "WORKED_IN": "làm việc trong",
             "ACTIVE_IN": "hoạt động trong",
+            # Achievements & Events
             "ACHIEVED": "đạt được",
             "INFLUENCED_BY": "bị ảnh hưởng bởi",
             "PARTICIPATED_IN": "tham gia",
+            # Roles & Associations
             "HAS_ROLE": "có vai trò",
             "BELONGS_TO_DYNASTY": "thuộc triều đại",
             "HAS_NAME": "còn được biết đến với tên",
@@ -507,7 +717,8 @@ class GraphRetriever:
             return f"{person_name} không có thông tin về {vietnamese_rel}"
         
         # Format target names with direction info for family relationships
-        family_rels = {"FATHER_OF", "MOTHER_OF", "CHILD_OF", "SPOUSE_OF", "SIBLING_OF"}
+        family_rels = {"FATHER_OF", "MOTHER_OF", "CHILD_OF", "SPOUSE_OF", "SIBLING_OF",
+                      "ADOPTED_CHILD_OF", "ADOPTIVE_PARENT_OF", "FOSTER_CHILD_OF", "FOSTER_PARENT_OF"}
         
         formatted_targets = []
         for t in targets:

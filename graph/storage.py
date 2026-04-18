@@ -20,17 +20,11 @@ class GraphDB:
         )
         self.database = os.getenv("NEO4J_DB")
 
-    def get_founder(self, company_name):
-        """Retrieve founder(s) of a company."""
-        query = """
-        MATCH (p:Person)-[:FOUNDED]->(c:Company)
-        WHERE trim(toLower(c.name)) = trim(toLower($name))
-        RETURN p.name AS founder
-        """
-
+    def run_query(self, query, parameters=None):
+        """Run a Cypher query and return results."""
         with self.driver.session(database=self.database) as session:
-            result = session.run(query, name=company_name)
-            return [r["founder"] for r in result]
+            result = session.run(query, parameters or {})
+            return [dict(r) for r in result]
     
     def close(self):
         """Close the database connection."""

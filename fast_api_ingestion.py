@@ -14,8 +14,14 @@ import re
 import html
 from threading import Lock
 
-from pipeline.custom_graph_extractor import CustomGraphExtractor
+from pipeline.custom_graph_extractor import (
+    CustomGraphExtractor,
+    ExtractionConfig,
+    get_preset_config,
+    create_custom_config,
+)
 from graph.storage import GraphDB
+from pipeline.pg_to_neo4j import PostgresToNeo4jMigrator
 
 from api.schemas import QueryRequest, QueryResponse
 from pipeline.pg_to_neo4j import PostgresToNeo4jMigrator
@@ -84,7 +90,7 @@ def extract_text_from_file(file_content: str, file_type: str) -> str:
 
 
 def get_person_profile(person_name: str) -> Dict[str, Any]:
-    """Get complete person profile from Neo4j"""
+    """Get complete person profile from Neo4j - ALL relationships"""
     db = GraphDB()
     profile = {
         "name": person_name,
@@ -93,12 +99,15 @@ def get_person_profile(person_name: str) -> Dict[str, Any]:
         "eras": [],
         "fields": [],
         "relationships": [],
+        "locations": [],
+        "organizations": [],
+        "all_connections": [],
         "total_nodes": 0
     }
-    
+
     try:
         with db.driver.session(database=db.database) as session:
-            # Count total nodes for this person
+            # Count total nodes connected to this person
             total = session.run(
                 """
                 MATCH (p:Person {name: $name})
@@ -108,95 +117,162 @@ def get_person_profile(person_name: str) -> Dict[str, Any]:
                 name=person_name
             ).single()
             profile["total_nodes"] = total["total"] if total else 1
-            
-            # Get achievements
-            achievements = session.run(
+
+            # Get ALL relationships (TẤT CẢ types)
+            all_rels = session.run(
                 """
-                MATCH (p:Person {name: $name})-[:ACHIEVED]->(a:Achievement)
-                RETURN a.name as name, a.description as description
-                ORDER BY a.name
+                MATCH (p:Person {name: $name})-[r]-(connected)
+                RETURN 
+                    TYPE(r) as rel_type,
+                    LABELS(connected)[0] as node_type,
+                    connected.name as node_name,
+                    connected.description as description,
+                    properties(r) as rel_props
+                ORDER BY rel_type, node_type
                 """,
                 name=person_name
             ).data()
-            profile["achievements"] = [
-                {"name": a["name"], "description": a.get("description", "")}
-                for a in achievements
+
+            profile["all_connections"] = [
+                {
+                    "relationship": r["rel_type"],
+                    "node_type": r["node_type"],
+                    "node_name": r["node_name"],
+                    "description": r.get("description", ""),
+                    "rel_properties": r.get("rel_props", {})
+                }
+                for r in all_rels
             ]
-            
-            # Get events
-            events = session.run(
-                """
-                MATCH (p:Person {name: $name})-[:PARTICIPATED_IN]->(e:Event)
-                RETURN e.name as name, e.event_type as type, e.description as description
-                ORDER BY e.name
-                """,
-                name=person_name
-            ).data()
-            profile["events"] = [
-                {"name": e["name"], "type": e.get("type", ""), "description": e.get("description", "")}
-                for e in events
-            ]
-            
-            # Get eras
-            eras = session.run(
-                """
-                MATCH (p:Person {name: $name})-[:ACTIVE_IN]->(e:Era)
-                RETURN e.name as name, e.period as period
-                ORDER BY e.name
-                """,
-                name=person_name
-            ).data()
-            profile["eras"] = [
-                {"name": e["name"], "period": e.get("period", "")}
-                for e in eras
-            ]
-            
-            # Get fields
-            fields = session.run(
-                """
-                MATCH (p:Person {name: $name})-[:ACTIVE_IN]->(f:Field)
-                RETURN f.name as name
-                ORDER BY f.name
-                """,
-                name=person_name
-            ).data()
-            profile["fields"] = [f["name"] for f in fields]
-            
-            # Get person relationships
-            relationships = session.run(
-                """
-                MATCH (p:Person {name: $name})-[r:STUDENT_OF|MENTOR_OF|FATHER_OF|MOTHER_OF|CHILD_OF|SPOUSE_OF|SIBLING_OF|ALLY_OF|ENEMY_OF|SUCCESSOR_OF]-(other:Person)
-                RETURN other.name as related_person, TYPE(r) as relationship_type
-                ORDER BY other.name
-                """,
-                name=person_name
-            ).data()
-            profile["relationships"] = [
-                {"person": r["related_person"], "type": r["relationship_type"]}
-                for r in relationships
-            ]
-            
+
+            # Categorize relationships by type
+            rel_by_type = {}
+            for r in all_rels:
+                rel_type = r["rel_type"]
+                if rel_type not in rel_by_type:
+                    rel_by_type[rel_type] = []
+                rel_by_type[rel_type].append({
+                    "node_name": r["node_name"],
+                    "description": r.get("description", "")
+                })
+
+            # Map to categories
+            family_rels = {"PARENT_OF", "CHILD_OF", "SPOUSE_OF", "SIBLING_OF", "GRANDPARENT_OF", "GRANDCHILD_OF", "EXTENDED_FAMILY_OF"}
+            political_rels = {"MEMBER_OF", "LEADER_OF", "FOUNDED", "FOUNDED_BY", "SUCCEEDED", "PREDECESSOR_OF", "COMMANDED", "COMMANDED_BY", "APPOINTED_BY", "REVOLTED_AGAINST"}
+            event_rels = {"PARTICIPATED_IN", "WITNESSED", "CAUSED", "LEAD_TO", "RESULTED_IN", "PERFORMED", "ORGANIZED", "HOSTED"}
+            location_rels = {"BORN_IN", "DIED_AT", "RESIDED_IN", "STUDIED_AT", "WORKED_AT", "RULED", "RULED_BY", "OCCURRED_IN", "OCCURRED_AT", "LOCATED_AT"}
+            achievement_rels = {"ACHIEVED", "INVENTED", "CREATED", "AUTHORED", "COMPOSED", "BUILT", "RECEIVED_AWARD", "GRANTED_TITLE", "RECEIVED_TITLE"}
+
+            # Build categorized relationships
+            for rel_type, nodes in rel_by_type.items():
+                if rel_type in family_rels:
+                    profile["relationships"].extend([
+                        {"person": n["node_name"], "type": rel_type, "category": "family"}
+                        for n in nodes
+                    ])
+                elif rel_type in location_rels:
+                    profile["locations"].extend([
+                        {"name": n["node_name"], "type": rel_type, "description": n.get("description", "")}
+                        for n in nodes
+                    ])
+                elif rel_type in political_rels:
+                    profile["organizations"].extend([
+                        {"name": n["node_name"], "type": rel_type, "description": n.get("description", "")}
+                        for n in nodes
+                    ])
+                elif rel_type in event_rels:
+                    profile["events"].extend([
+                        {"name": n["node_name"], "type": rel_type, "description": n.get("description", "")}
+                        for n in nodes
+                    ])
+                elif rel_type in achievement_rels:
+                    profile["achievements"].extend([
+                        {"name": n["node_name"], "type": rel_type, "description": n.get("description", "")}
+                        for n in nodes
+                    ])
+
+            # Deduplicate
+            seen = set()
+            unique_rels = []
+            for r in profile["relationships"]:
+                key = (r["person"], r["type"])
+                if key not in seen:
+                    seen.add(key)
+                    unique_rels.append(r)
+            profile["relationships"] = unique_rels
+
+            seen = set()
+            unique_events = []
+            for e in profile["events"]:
+                key = e["name"]
+                if key not in seen:
+                    seen.add(key)
+                    unique_events.append(e)
+            profile["events"] = unique_events
+
+            seen = set()
+            unique_locs = []
+            for l in profile["locations"]:
+                key = l["name"]
+                if key not in seen:
+                    seen.add(key)
+                    unique_locs.append(l)
+            profile["locations"] = unique_locs
+
+            seen = set()
+            unique_orgs = []
+            for o in profile["organizations"]:
+                key = o["name"]
+                if key not in seen:
+                    seen.add(key)
+                    unique_orgs.append(o)
+            profile["organizations"] = unique_orgs
+
     except Exception as e:
         profile["error"] = f"Could not retrieve full profile: {str(e)}"
-    
+
     return profile
 
 
-def process_ingestion(job_id: str, file_content: str, target_person: str, file_type: str, filename: str):
-    """Background task: extract, enrich, and build complete profile"""
+def process_ingestion(
+    job_id: str, 
+    file_content: str, 
+    target_person: str, 
+    file_type: str, 
+    filename: str,
+    preset: Optional[str] = None,
+    use_original_prompt: bool = True,
+    max_chunk_size: int = 500000,  # Max 500k chars per LLM call
+):
+    """
+    Background task: extract, enrich, and build complete profile.
+    
+    Args:
+        job_id: Job identifier
+        file_content: Text content to extract
+        target_person: Person to prioritize
+        file_type: File type (html, md, text)
+        filename: Source filename
+        preset: Preset config name (default, vietnam_history, science_tech, etc.)
+        use_original_prompt: True = dùng prompt gốc (nhiều node)
+        max_chunk_size: Max characters per chunk (default 500000)
+    """
     try:
         with jobs_lock:
             if job_id in ingestion_jobs:
                 ingestion_jobs[job_id]["status"] = "processing"
         
         print(f"\n[JOB {job_id[:8]}] Starting extraction for '{target_person}'")
+        if preset:
+            print(f"[JOB {job_id[:8]}] Using preset: {preset}")
+        print(f"[JOB {job_id[:8]}] Prompt mode: {'ORIGINAL (many nodes)' if use_original_prompt else 'CONFIG-BASED'}")
         
         # Extract text
         text = extract_text_from_file(file_content, file_type)
         if not text or len(text.strip()) == 0:
             raise ValueError("No content extracted from file")
         
-        print(f"[JOB {job_id[:8]}] Extracted text length: {len(text)} chars")
+        original_length = len(text)
+        print(f"[JOB {job_id[:8]}] Extracted text length: {original_length} chars")
         
         # Create Person node if missing
         db = GraphDB()
@@ -215,18 +291,44 @@ def process_ingestion(job_id: str, file_content: str, target_person: str, file_t
             else:
                 print(f"[JOB {job_id[:8]}] Person node already exists: '{target_person}'")
         
-        # Extract with target_person filtering (like test_person_extraction.py)
-        print(f"[JOB {job_id[:8]}] Starting LLM extraction with link_to_person='{target_person}'...")
-        extractor = CustomGraphExtractor()
-        nodes_created, rels_created = extractor.enrich_text(
-            text,
-            source_chunk_id=filename,
-            link_to_person=target_person  # Enable target_person filtering!
-        )
+        # Create extractor
+        if preset:
+            extractor = CustomGraphExtractor()
+            extractor.set_preset(preset)
+            print(f"[JOB {job_id[:8]}] Config applied: {preset}")
+        else:
+            extractor = CustomGraphExtractor()
+        
+        # CHUNK TEXT if too long
+        chunks = chunk_text(text, max_chunk_size=max_chunk_size)
+        num_chunks = len(chunks)
+        print(f"[JOB {job_id[:8]}] Text split into {num_chunks} chunks (max {max_chunk_size} chars each)")
+        
+        # Process each chunk and collect results
+        total_nodes = 0
+        total_rels = 0
+        
+        for i, chunk in enumerate(chunks):
+            print(f"[JOB {job_id[:8]}] Processing chunk {i+1}/{num_chunks} ({len(chunk)} chars)...")
+            
+            # Extract from this chunk
+            chunk_nodes, chunk_rels = extractor.enrich_text(
+                chunk,
+                source_chunk_id=f"{filename}_chunk_{i+1}",
+                link_to_person=target_person,
+                use_original_prompt=use_original_prompt,
+            )
+            
+            total_nodes += chunk_nodes
+            total_rels += chunk_rels
+            print(f"[JOB {job_id[:8]}]   Chunk {i+1}: {chunk_nodes} nodes, {chunk_rels} rels")
+        
+        nodes_created = total_nodes
+        rels_created = total_rels
         
         print(f"[JOB {job_id[:8]}] ✓ Extraction complete!")
-        print(f"[JOB {job_id[:8]}]   Nodes created: {nodes_created}")
-        print(f"[JOB {job_id[:8]}]   Relationships created: {rels_created}")
+        print(f"[JOB {job_id[:8]}]   Total nodes created: {nodes_created}")
+        print(f"[JOB {job_id[:8]}]   Total relationships created: {rels_created}")
         
         # Get complete profile after extraction
         print(f"[JOB {job_id[:8]}] Querying Neo4j for complete profile...")
@@ -249,7 +351,7 @@ def process_ingestion(job_id: str, file_content: str, target_person: str, file_t
                 ingestion_jobs[job_id]["profile"] = profile
                 ingestion_jobs[job_id]["completed_at"] = datetime.now().isoformat()
                 ingestion_jobs[job_id]["message"] = (
-                    f"Extraction complete! Created {nodes_created} nodes and {rels_created} relationships."
+                    f"Extraction complete! Created {nodes_created} nodes and {rels_created} relationships from {num_chunks} chunks."
                 )
         
         print(f"[JOB {job_id[:8]}] ✅ Job completed successfully!")
@@ -266,25 +368,187 @@ def process_ingestion(job_id: str, file_content: str, target_person: str, file_t
                 ingestion_jobs[job_id]["completed_at"] = datetime.now().isoformat()
 
 
+def chunk_text(text: str, max_chunk_size: int = 10000, overlap: int = 200) -> list:
+    """
+    Split text into chunks with overlap for context continuity.
+    
+    Args:
+        text: Text to split
+        max_chunk_size: Maximum characters per chunk
+        overlap: Overlap between chunks (for context continuity)
+    
+    Returns:
+        List of text chunks
+    """
+    if len(text) <= max_chunk_size:
+        return [text]
+    
+    chunks = []
+    
+    # Try to split by double newlines (paragraphs) first
+    paragraphs = text.split('\n\n')
+    
+    current_chunk = ""
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+            
+        # If single paragraph is too long, split by sentences
+        if len(para) > max_chunk_size:
+            # If we have current chunk, add it first
+            if current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = ""
+            
+            # Split long paragraph by sentences
+            sentences = re.split(r'(?<=[.!?])\s+', para)
+            current_sentence_chunk = ""
+            
+            for sentence in sentences:
+                if len(current_sentence_chunk) + len(sentence) + 1 > max_chunk_size:
+                    if current_sentence_chunk:
+                        chunks.append(current_sentence_chunk)
+                    # Start new chunk with overlap
+                    current_sentence_chunk = sentence[-overlap:] if overlap > 0 and len(sentence) > overlap else sentence
+                else:
+                    if current_sentence_chunk:
+                        current_sentence_chunk += " " + sentence
+                    else:
+                        current_sentence_chunk = sentence
+            
+            if current_sentence_chunk:
+                current_chunk = current_sentence_chunk
+                
+        elif len(current_chunk) + len(para) + 2 > max_chunk_size:
+            # Current chunk is full, add it and start new
+            chunks.append(current_chunk)
+            # Start new chunk with overlap from previous
+            current_chunk = para[-overlap:] if overlap > 0 and len(para) > overlap else para
+        else:
+            # Add to current chunk
+            if current_chunk:
+                current_chunk += "\n\n" + para
+            else:
+                current_chunk = para
+    
+    # Don't forget the last chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
+
+def process_migration_new(
+    job_id: str,
+    pg_dsn: str,
+    table_name: str = "persons",
+    limit: Optional[int] = None,
+):
+    """
+    Background task: migrate data from PostgreSQL to Neo4j.
+    
+    Args:
+        job_id: Job identifier
+        pg_dsn: PostgreSQL connection string
+        table_name: Table to migrate (default: "persons")
+        limit: Limit number of records
+    """
+    try:
+        with jobs_lock:
+            if job_id in ingestion_jobs:
+                ingestion_jobs[job_id]["status"] = "processing"
+        
+        print(f"\n[JOB {job_id[:8]}] Starting migration from PostgreSQL")
+        print(f"[JOB {job_id[:8]}] Table: {table_name}, Limit: {limit or 'None'}")
+        
+        # Create migrator
+        migrator = PostgresToNeo4jMigrator(pg_dsn=pg_dsn)
+        
+        # Run migration based on table name
+        if table_name == "persons":
+            result = migrator.migrate_persons(person_table=table_name, limit=limit)
+        elif table_name in ["documents", "parent_chunks", "child_chunks", "summary_documents"]:
+            # Use all-in-one migration for document-related tables
+            result = migrator.migrate_all_documents_and_chunks(
+                document_table="documents",
+                parent_table="parent_chunks",
+                child_table="child_chunks",
+                summary_table="summary_documents",
+                assoc_table="document_summary_association",
+                limit_documents=limit,
+                limit_chunks=limit,
+            )
+        else:
+            # Try persons migration as default
+            result = migrator.migrate_persons(person_table=table_name, limit=limit)
+        
+        nodes_created = result.get("nodes_created", 0)
+        rels_created = result.get("relationships_created", 0)
+        
+        print(f"[JOB {job_id[:8]}] ✓ Migration complete!")
+        print(f"[JOB {job_id[:8]}]   Nodes created: {nodes_created}")
+        print(f"[JOB {job_id[:8]}]   Relationships created: {rels_created}")
+        
+        # Update job
+        with jobs_lock:
+            if job_id in ingestion_jobs:
+                ingestion_jobs[job_id]["status"] = "completed"
+                ingestion_jobs[job_id]["nodes_created"] = nodes_created
+                ingestion_jobs[job_id]["relationships_created"] = rels_created
+                ingestion_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+                ingestion_jobs[job_id]["message"] = (
+                    f"Migration complete! Created {nodes_created} nodes and {rels_created} relationships."
+                )
+        
+        print(f"[JOB {job_id[:8]}] ✅ Migration job completed successfully!")
+    
+    except Exception as e:
+        import traceback
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"[JOB {job_id[:8]}] ❌ MIGRATION ERROR: {error_msg}")
+        
+        with jobs_lock:
+            if job_id in ingestion_jobs:
+                ingestion_jobs[job_id]["status"] = "failed"
+                ingestion_jobs[job_id]["error"] = str(e)
+                ingestion_jobs[job_id]["completed_at"] = datetime.now().isoformat()
+
+
 @app.get("/")
 async def root():
     """Root endpoint with API info"""
     return {
         "status": "ok",
         "title": "Ingestion API - Vietnamese Historical Figures",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "message": "Upload .html/.md files to extract person profiles with Neo4j",
         "endpoints": {
             "upload": "POST /upload - Upload file with target_person",
+            "ingest_new": "POST /ingest_new - Text-based with preset config",
             "status": "GET /status/{job_id} - Get job status and profile",
             "jobs": "GET /jobs - List all jobs",
             "extract_direct": "POST /extract-direct - Direct extraction for testing",
+            "chat": "POST /chat - Graph RAG queries",
             "docs": "GET /docs - Interactive API docs (Swagger UI)",
             "redoc": "GET /redoc - ReDoc documentation"
         },
+        "presets": {
+            "default": "Cân bằng, đầy đủ",
+            "vietnam_history": "Tối ưu cho lịch sử VN (triều đại, tước vị...)",
+            "science_tech": "Tối ưu cho khoa học (phát minh, giải thưởng...)",
+            "literature_art": "Tối ưu cho văn học/nghệ thuật",
+            "minimal": "Chỉ thông tin cơ bản",
+            "maximum": "Trích xuất tối đa mọi thứ"
+        },
+        "prompt_modes": {
+            "use_original_prompt=True": "Dùng prompt gốc - tạo NHIỀU node (~110 nodes)",
+            "use_original_prompt=False": "Dùng config-based - linh hoạt theo preset"
+        },
         "example_usage": {
-            "curl": "curl -F 'file=@file.html' -F 'target_person=Kim Đồng' http://localhost:8000/upload",
-            "python": "requests.post('http://localhost:8000/upload', files={'file': open('file.html', 'rb')}, data={'target_person': 'Kim Đồng'})"
+            "curl_upload": "curl -F 'file=@file.html' -F 'target_person=Kim Đồng' -F 'preset=vietnam_history' http://localhost:8000/upload",
+            "curl_ingest": "curl -X POST http://localhost:8000/ingest_new -H 'Content-Type: application/json' -d '{\"text\": \"...\", \"target_person\": \"Kim Đồng\", \"preset\": \"vietnam_history\"}'",
+            "python": "requests.post('http://localhost:8000/upload', files={'file': open('file.html', 'rb')}, data={'target_person': 'Kim Đồng', 'preset': 'vietnam_history', 'use_original_prompt': True})"
         }
     }
 
@@ -293,17 +557,18 @@ async def root():
 async def upload_file(
     file: UploadFile = File(...),
     target_person: str = Form(None),
+    preset: str = Form("vietnam_history"),  # Default preset
+    use_original_prompt: bool = Form(True),  # Always true by default
     background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """
     Upload .html or .md file for extraction with Neo4j
     
-    Uses target_person filtering to prevent data contamination.
-    Extracts according to test_person_extraction.py logic.
-    
     Args:
         file: Upload .html or .md file
         target_person: Name of person to extract (default: filename without extension)
+        preset: Preset config ("default", "vietnam_history", "science_tech", "literature_art", "minimal", "maximum", None)
+        use_original_prompt: True = dùng prompt gốc (nhiều node ~110), False = dùng config-based prompt
     
     Returns:
         UploadResponse with job_id for tracking
@@ -321,6 +586,14 @@ async def upload_file(
     # Set target_person from filename if not provided
     if not target_person:
         target_person = filename.rsplit('.', 1)[0]
+    
+    # Validate preset if provided
+    valid_presets = ["default", "vietnam_history", "science_tech", "literature_art", "minimal", "maximum"]
+    if preset and preset not in valid_presets:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid preset: '{preset}'. Valid options: {valid_presets}"
+        )
     
     try:
         # Read file
@@ -344,7 +617,9 @@ async def upload_file(
                 "created_at": datetime.now().isoformat(),
                 "completed_at": None,
                 "profile": None,
-                "message": "Queued for processing"
+                "message": "Queued for processing",
+                "preset": preset,
+                "use_original_prompt": use_original_prompt,
             }
         
         # Queue background processing
@@ -354,7 +629,9 @@ async def upload_file(
             file_content,
             target_person,
             file_ext,
-            filename
+            filename,
+            preset,
+            use_original_prompt,
         )
         
         return {
@@ -362,7 +639,7 @@ async def upload_file(
             "target_person": target_person,
             "filename": filename,
             "status": "queued",
-            "message": f"Processing '{target_person}' from {filename}. Check /status/{job_id}"
+            "message": f"Processing '{target_person}' from {filename}. Check /status/{job_id}\nPreset: {preset or 'default'}\nOriginal prompt: {use_original_prompt}"
         }
     
     except HTTPException:
@@ -376,7 +653,8 @@ class IngestNewRequest(BaseModel):
     text: str
     source_type: str = Field("text", description="wiki|doc|custom")
     target_person: Optional[str] = None
-    config: Optional[Dict[str, Any]] = {}
+    preset: str = Field("vietnam_history", description="default|vietnam_history|science_tech|literature_art|minimal|maximum")
+    use_original_prompt: bool = Field(True, description="True = nhiều node, False = config-based")
 
 
 @app.post("/ingest_new", response_model=JobResult)
@@ -385,6 +663,13 @@ async def ingest_new(request: IngestNewRequest, background_tasks: BackgroundTask
     New ingestion endpoint - text-based with extra config
     
     Extended version of /upload for programmatic use.
+    
+    Args:
+        text: Text content to extract
+        source_type: Source type (wiki, doc, custom)
+        target_person: Person to prioritize
+        preset: Preset config name
+        use_original_prompt: True = prompt gốc (nhiều node), False = config-based
     """
     job_id = str(uuid.uuid4())
     with jobs_lock:
@@ -400,18 +685,21 @@ async def ingest_new(request: IngestNewRequest, background_tasks: BackgroundTask
             "completed_at": None,
             "profile": None,
             "source_type": request.source_type,
-            "config": request.config,
+            "preset": request.preset,
+            "use_original_prompt": request.use_original_prompt,
             "message": "Queued for new ingestion pipeline"
         }
     
-    # Reuse same background task (process_ingestion accepts file_type="text")
+    # Reuse same background task with new parameters
     background_tasks.add_task(
         process_ingestion,
         job_id,
         request.text,
         request.target_person or "unknown",
         "text",
-        f"{request.source_type}.txt"
+        f"{request.source_type}.txt",
+        request.preset,
+        request.use_original_prompt,
     )
     
     # Return immediate queued response
@@ -512,6 +800,8 @@ async def list_jobs():
 async def extract_direct(
     text: str,
     target_person: str,
+    preset: str = "vietnam_history",  # Default preset
+    use_original_prompt: bool = True,  # Always true by default
     file_type: str = "text"
 ):
     """
@@ -520,6 +810,8 @@ async def extract_direct(
     Args:
         text: Raw text content
         target_person: Person name to extract for
+        preset: Preset config ("default", "vietnam_history", etc.)
+        use_original_prompt: True = prompt gốc (nhiều node), False = config-based
         file_type: "html", "md", or "text" (default: "text")
     
     Returns:
@@ -546,12 +838,19 @@ async def extract_direct(
                     name=target_person
                 )
         
+        # Create extractor with preset if specified
+        if preset:
+            extractor = CustomGraphExtractor()
+            extractor.set_preset(preset)
+        else:
+            extractor = CustomGraphExtractor()
+        
         # Extract with target_person filtering
-        extractor = CustomGraphExtractor()
         nodes, rels = extractor.enrich_text(
             clean_text,
             source_chunk_id="direct_input",
-            link_to_person=target_person  # Enable filtering!
+            link_to_person=target_person,
+            use_original_prompt=use_original_prompt,
         )
         
         # Get profile
@@ -560,6 +859,8 @@ async def extract_direct(
         return {
             "status": "completed",
             "target_person": target_person,
+            "preset": preset,
+            "use_original_prompt": use_original_prompt,
             "nodes_created": nodes,
             "relationships_created": rels,
             "profile": profile,
@@ -681,24 +982,34 @@ async def debug_extract(
 
 @app.post("/chat", response_model=QueryResponse)
 async def chat(request: QueryRequest):
-    """Chat endpoint for Graph RAG queries."""
-    answer = ask_agent(request.question)
-    return QueryResponse(answer=answer)
+    """Chat endpoint for Graph RAG queries with active person tracking."""
+    result = ask_agent(request.question)
+    return QueryResponse(
+        answer=result.get("answer", ""),
+        active_person=result.get("active_person", None)
+    )
 
 if __name__ == "__main__":
     import uvicorn
     
     print("=" * 70)
-    print("INGESTION API - FastAPI Server v2.0.0")
-    print("Vietnamese Historical Figures - with target_person filtering")
+    print("INGESTION API - FastAPI Server v3.0.0")
+    print("Vietnamese Historical Figures - với PRESET CONFIG & ORIGINAL PROMPT")
     print("=" * 70)
     print("\nStarting server on http://localhost:8000")
     print("\nEndpoints:")
-    print("  POST /upload - Upload .html/.md file with target_person")
+    print("  POST /upload - Upload .html/.md file với preset & use_original_prompt")
+    print("  POST /ingest_new - Text-based với preset config")
     print("  GET /status/{job_id} - Get job status and full profile")
     print("  GET /jobs - List all jobs")
     print("  POST /extract-direct - Direct extraction (for testing)")
+    print("  POST /chat - Graph RAG queries")
     print("  GET /health - Health check with Neo4j stats")
+    print("\nPresets:")
+    print("  default, vietnam_history, science_tech, literature_art, minimal, maximum")
+    print("\nPrompt Modes:")
+    print("  use_original_prompt=True  → NHIỀU node (~110)")
+    print("  use_original_prompt=False → CONFIG-BASED (linh hoạt)")
     print("\nAPI Docs: http://localhost:8000/docs")
     print("=" * 70 + "\n")
     

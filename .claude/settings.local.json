@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile pipeline/query_pipeline.py)",
+      "Bash(timeout 5 python fast_api_ingestion.py)",
+      "Bash(python -c \"from pipeline.query_pipeline import QueryPipeline; print\\(''Import OK''\\)\")"
+    ]
+  }
+}

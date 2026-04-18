@@ -340,6 +340,22 @@ class GraphBuilder:
                 influenced_by=[{"person": "Max Planck", "influence_type": "Academic"}]
             )
         """
+        if person_properties:
+            reign_start = person_properties.get("reign_start_year") or person_properties.get("reign_start")
+            reign_end = person_properties.get("reign_end_year") or person_properties.get("reign_end")
+            try:
+                start_year = int(reign_start) if reign_start is not None else None
+            except Exception:
+                start_year = None
+            try:
+                end_year = int(reign_end) if reign_end is not None else None
+            except Exception:
+                end_year = None
+
+            if start_year is not None and end_year is not None:
+                if "reign_duration_years" not in person_properties:
+                    person_properties["reign_duration_years"] = abs(end_year - start_year)
+
         # Tạo Person node
         self.create_node("Person", person_name, person_properties)
 
