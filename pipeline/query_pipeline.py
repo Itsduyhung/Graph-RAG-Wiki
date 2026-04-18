@@ -722,18 +722,20 @@ class QueryPipeline:
                         
                         # Try exact match first (e.g., "lý chiêu hoàng" in question)
                         if candidate_lower in question_lower:
-                            found_names.append((candidate_name, 1000 + len(candidate_lower.split())))  # Exact match = highest priority
+                            # FIX: Much higher score for exact match to ensure correct priority
+                            found_names.append((candidate_name, 5000 + len(candidate_lower.split())))  # Exact match = highest priority
                             found_match = True
                             break
                         
                         # Try suffix match for compound names (e.g., "chiêu hoàng" matches "lý chiêu hoàng")
-                        # Split by spaces and check if last N words appear in question
+                        # FIX: Require longer suffix to avoid false matches like "văn" matching both
                         name_words = candidate_lower.split()
                         for i in range(1, len(name_words)):
                             suffix = " ".join(name_words[i:])  # "chiêu hoàng", "hoàng", etc.
-                            if len(suffix) > 2 and suffix in question_lower:
-                                # Score = number of words in suffix (longer suffix = more specific)
-                                specificity = len(suffix.split())
+                            # FIX: Minimum 3 chars to avoid short matches like "văn" matching everything
+                            if len(suffix) >= 5 and suffix in question_lower:
+                                # Score = number of words in suffix * 10 (longer suffix = more specific)
+                                specificity = len(suffix.split()) * 10
                                 found_names.append((candidate_name, specificity))
                                 found_match = True
                                 break
@@ -741,6 +743,7 @@ class QueryPipeline:
                             break
                 
                 # Sort by specificity DESC (higher = more specific), then by length DESC
+                # FIX: Exact matches (1000+) should always come FIRST
                 found_names.sort(key=lambda x: (x[1], len(x[0])), reverse=True)
                 result_names = [name for name, _ in found_names]
                 
