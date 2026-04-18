@@ -1631,8 +1631,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             for term in search_terms:
                 result = session.run("""
                     MATCH (n:Name)
-                    WHERE toLower(n.value) CONTAINS toLower($term)
-                       OR toLower(n.name_type) CONTAINS toLower($term)
+                    WHERE n.value = $term OR n.name_type = $term
                     RETURN n, labels(n)[0] as type
                     LIMIT 5
                 """, term=term)
@@ -1854,16 +1853,14 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 except Exception as e:
                     print(f"  [Fulltext] Index error: {e}")
 
-            # CONTAINS search (fallback)
+            # CONTAINS search (fallback) - skip fields that might be arrays
             for term in search_terms:
                 result = session.run("""
                     MATCH (n)
-                    WHERE toLower(n.name) CONTAINS toLower($term)
-                       OR toLower(n.value) CONTAINS toLower($term)
-                       OR toLower(n.title) CONTAINS toLower($term)
-                       OR toLower(n.full_name) CONTAINS toLower($term)
-                       OR toLower(n.other_name) CONTAINS toLower($term)
-                       OR toLower(n.alias) CONTAINS toLower($term)
+                    WHERE n.name = $term
+                       OR n.value = $term
+                       OR n.title = $term
+                       OR n.full_name = $term
                     RETURN n, labels(n)[0] as type
                     LIMIT 10
                 """, term=term)
