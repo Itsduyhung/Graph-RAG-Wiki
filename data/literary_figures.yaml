@@ -1,0 +1,147 @@
+# Vietnamese Literary/Historical Figures - Birth/Death Data
+# For ingestion via create_person_profile_data.py
+# Format: pen_name → real_name + birth/death + aliases
+
+figures:
+  # Hồ Xuân Hương (main issue)
+  - pen_name: "Hồ Xuân Hương"
+    real_name: "Nguyễn Văn Thị Hương"  # Matches DB node
+    birth_year: 1761
+    death_year: 1822
+    notable_works: "Bánh trôi nước, Tự tình II, Xuân Hương thi tập, Lưu hương ký, Đèo Ba Dội, Quả mít, Bánh Nam"
+    aliases: ["Hồ Xuân Hương", "Nguyễn Văn Thị Hương", "Học phi Nguyễn Văn Thị Hương"]
+    description: "Bà chúa thơ Nôm - thơ trào phúng táo bạo, nổi tiếng với các tác phẩm dùng hình ảnh đời thường"
+    dynasty: "Hậu Lê"
+  
+  # Nam Cao (test case)
+  - pen_name: "Nam Cao"
+    real_name: "Trần Hữu Tri"
+    birth_year: 1915
+    death_year: 1951
+    notable_works: "Chí Phèo, Lão Hạc, Đời thừa, Sống mòn, Trăng rằm, Tư Cách Mộp"
+    aliases: ["Nam Cao", "Trần Hữu Tri"]
+    description: "Nhà văn hiện thực phê phán, đại diện văn học Việt Nam 1930-1945, nổi tiếng bi kịch người trí thức nghèo"
+  
+  # Nguyễn Du
+  - pen_name: "Nguyễn Du"
+    real_name: "Nguyễn Du"
+    birth_year: 1765
+    death_year: 1820
+    aliases: ["Nguyễn Du", "Tố Như"]
+    description: "Tác giả Truyện Kiều, đại thi hào dân tộc"
+    dynasty: "Hậu Lê"
+  
+  # Nguyễn Công Trứ
+  - pen_name: "Nguyễn Công Trứ"
+    real_name: "Nguyễn Công Trứ"
+    birth_year: 1778
+    death_year: 1858
+    aliases: ["Nguyễn Công Trứ", "Hội Quả"]
+    description: "Văn học yêu nước, mở mang bờ cõi"
+  
+  # Bà Huyện Thanh Quan
+  - pen_name: "Bà Huyện Thanh Quan"
+    real_name: "Nguyễn Thị Hinh"
+    birth_year: 1805
+    death_year: 1848
+    aliases: ["Bà Huyện Thanh Quan", "Nguyễn Thị Hinh"]
+    description: "Thơ Đường luật trữ tình, hoài cổ"
+  
+  # Chu Mạnh Trinh
+  - pen_name: "Chu Mạnh Trinh"
+    real_name: "Chu Mạnh Trinh"
+    birth_year: 1862
+    death_year: 1905
+    aliases: ["Chu Mạnh Trinh"]
+    description: "Cần Vương, thi hào thất thế"
+  
+  # Tản Đà
+  - pen_name: "Tản Đà"
+    real_name: "Nguyễn Khắc Trường"
+    birth_year: 1889
+    death_year: 1939
+    aliases: ["Tản Đà", "Nguyễn Khắc Trường"]
+    description: "Nhà thơ lãng mạn, Giông tố"
+  
+  # Thế Lữ
+  - pen_name: "Thế Lữ"
+    real_name: "Nguyễn Tuấn Trình"
+    birth_year: 1907
+    death_year: 1989
+    aliases: ["Thế Lữ", "Nguyễn Tuấn Trình"]
+    description: "Thơ mới, Mấy vần thơ"
+  
+  # Xuân Diệu
+  - pen_name: "Xuân Diệu"
+    real_name: "Ngô Xuân Diệu"
+    birth_year: 1916
+    death_year: 1985
+    aliases: ["Xuân Diệu", "Ngô Xuân Diệu", "Ông hoàng thơ tình"]
+    description: "Ông hoàng thơ tình, Thơ thơ"
+  
+  # Hàn Mặc Tử
+  - pen_name: "Hàn Mặc Tử"
+    real_name: "Nguyễn Trọng Trí"
+    birth_year: 1912
+    death_year: 1940
+    aliases: ["Hàn Mặc Tử", "Nguyễn Trọng Trí"]
+    description: "Thơ điên, siêu thực"
+  
+  # Chế Lan Viên
+  - pen_name: "Chế Lan Viên"
+    real_name: "Phạm Kế Dí"
+    birth_year: 1920
+    death_year: 1989
+    aliases: ["Chế Lan Viên", "Phạm Kế Dí"]
+    description: "Đỉnh cao trào phúng, Người đi tìm hình của nước mình"
+  
+  # Nguyễn Bính
+  - pen_name: "Nguyễn Bính"
+    real_name: "Nguyễn Bính"
+    birth_year: 1918
+    death_year: 1966
+    aliases: ["Nguyễn Bính", "Thi sĩ đồng quê"]
+    description: "Thơ quê hương, Lỡ bước sang ngang"
+  
+  # Lưu Trọng Lư
+  - pen_name: "Lưu Trọng Lư"
+    real_name: "Lưu Trọng Lư"
+    birth_year: 1910
+    death_year: 1991
+    aliases: ["Lưu Trọng Lư"]
+    description: "Tiếng thu, Thơ mới"
+  
+  # Huy Cận
+  - pen_name: "Huy Cận"
+    real_name: "Cù Huy Cận"
+    birth_year: 1919
+    death_year: 2005
+    aliases: ["Huy Cận", "Cù Huy Cận"]
+    description: "Tràng giang, Làng quê"
+  
+  # Anh Thơ
+  - pen_name: "Anh Thơ"
+    real_name: "Thái Thị Thanh Tâm"
+    birth_year: 1922
+    death_year: 2005
+    aliases: ["Anh Thơ", "Thái Thị Thanh Tâm"]
+    description: "Chị em Thơ mới"
+  
+  # Đỗ Phủ (Chinese influence - common test)
+  - pen_name: "Đỗ Phủ"
+    real_name: "Du Fu"
+    birth_year: 712
+    death_year: 770
+    aliases: ["Đỗ Phủ", "Du Fu"]
+    description: "Thi thánh Trung Hoa (test foreign name)"
+  
+  # Lý Bạch
+  - pen_name: "Lý Bạch"
+    real_name: "Li Bai"
+    birth_year: 701
+    death_year: 762
+    aliases: ["Lý Bạch", "Li Bai", "Thi tiên"]
+    description: "Thi tiên Đường"
+
+# Usage: create_person_profile_data.py --yaml data/literary_figures.yaml
+
