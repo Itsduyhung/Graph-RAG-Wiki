@@ -20,7 +20,6 @@ import re
 import os
 from typing import Dict, Any, Optional, List, Tuple
 from graph.storage import GraphDB
-from retriever.hybrid_retriever import HybridRetriever
 from llm.answer_generator import AnswerGenerator
 from llm.llm_client import call_llm
 
@@ -59,8 +58,25 @@ NAME_PATTERNS = {
     "chồng": ["SPOUSE_OF"],
 }
 
-class QueryPipeline:
+# ============================================================================
+# EVENT SYNONYMS - DB-driven synonyms cho events
+# ============================================================================
+# Cấu trúc DB: (:Word {name: "đăng quang"})-[:SYNONYM]->(:Word {name: "lên ngôi"})
+EVENT_SYNONYM_GROUPS = [
+    # Đăng quang / Lên ngôi
+    ["đăng quang", "lên ngôi", "đăng cơ", "đăng vị", "thái tọa", "lên làm vua", "đăng hoàng"],
+    # Sinh / Ra đời
+    ["sinh", "ra đời", "hạ sinh", "chào đời", "ra mắt"],
+    # Mất / Qua đời
+    ["mất", "qua đời", "từ trần", "tịch", "băng hà", "thoái vị"],
+    # Kết hôn
+    ["kết hôn", "cưới", "thành hôn", "lấy vợ", "lấy chồng"],
+    # Bổ nhiệm
+    ["bổ nhiệm", "phong chức", "thăng chức", "lập quan"],
+]
 
+
+class QueryPipeline:
     """Query pipeline - DB-driven recall + LLM precision."""
 
     # Cache schema + synonyms
@@ -108,10 +124,9 @@ class QueryPipeline:
     def __init__(self, graph_db: GraphDB = None, model: str = None):
         self.graph_db = graph_db or GraphDB()
         self.model = model
-        self.hybrid_retriever = HybridRetriever(self.graph_db)
         self.answer_generator = AnswerGenerator(model=model)
 
-        # Semantic model (legacy)
+        # Semantic model (lazy load)
         self._semantic_model = None
         self._semantic_model_name = "BAAI/bge-m3"
 
@@ -230,72 +245,19 @@ class QueryPipeline:
         "lên ngôi": "PERFORMED",
         "phong": "PERFORMED",
         
-# === Temporal intents (EXPANDED: 42 birth + 45 death variants) ===
-        # Birth Year (42 variants)
-        "sinh năm": "birth_year",
-        "năm sinh": "birth_year",
-        "năm sinh ra": "birth_year",
-        "năm chào đời": "birth_year",
-        "năm ra đời": "birth_year",
-        "năm hạ sinh": "birth_year",
-        "năm xuất sinh": "birth_year",
-        "năm được sinh": "birth_year",
-        "thời điểm sinh": "birth_year",
-        "năm sinh nhật": "birth_year",
-        "năm ngày sinh": "birth_year",
-        "năm khai sinh": "birth_year",
-        "năm sinh nhật lần đầu": "birth_year",
-        "năm cất tiếng khóc": "birth_year",
-        "năm đến với đời": "birth_year",
-        "năm đầu đời": "birth_year",
-        "năm mới sinh": "birth_year",
-        "năm thơ ấu bắt đầu": "birth_year",
-        "năm sinh đầu tiên": "birth_year",
-        "sinh vào năm": "birth_year",
-        "ra đời năm": "birth_year",
-        "chào đời năm": "birth_year",
-        "hạ sinh năm": "birth_year",
-        "xuất sinh năm": "birth_year",
-        "năm sinh nhật đầu": "birth_year",
-        "năm sinh ra đời": "birth_year",
-        "năm đầu tiên sinh": "birth_year",
-        # Birth Date (separate)
+        # === FIX: Temporal intents (QUAN TRỌNG cho query về ngày sinh/mất) ===
+        # Sinh / Ra đời
+        "sinh năm": "birth_date",
         "ngày sinh": "birth_date",
+        "năm sinh": "birth_date",
         "sinh tháng": "birth_date",
         "ra đời": "birth_date",
         "chào đời": "birth_date",
         "hạ sinh": "birth_date",
-        # Mất / Qua đời (EXPANDED 45 variants)
-        "mất năm": "death_year",
-        "năm mất": "death_year",
-        "năm qua đời": "death_year",
-        "năm từ trần": "death_year",
-        "năm băng hà": "death_year",
-        "năm tắt thở": "death_year",
-        "năm hưởng thọ": "death_year",
-        "năm quy tiên": "death_year",
-        "năm hóa": "death_year",
-        "năm long đài": "death_year",
-        "năm nhắm mắt": "death_year",
-        "năm ra đi": "death_year",
-        "năm lìa đời": "death_year",
-        "năm trở về cõi tạm": "death_year",
-        "năm vĩnh biệt": "death_year",
-        "năm tạ thế": "death_year",
-        "năm viên dung": "death_year",
-        "năm đại hạn": "death_year",
-        "năm cuối đời": "death_year",
-        "năm qua trần": "death_year",
-        "năm mãn phần": "death_year",
-        "mất vào năm": "death_year",
-        "qua đời năm": "death_year",
-        "từ trần năm": "death_year",
-        "băng hà năm": "death_year",
-        "tắt thở năm": "death_year",
-        "hưởng thọ năm": "death_year",
-        "quy tiên năm": "death_year",
-        "hóa năm": "death_year",
+        # Mất / Qua đời
+        "mất năm": "death_date",
         "ngày mất": "death_date",
+        "năm mất": "death_date",
         "mất lúc": "death_date",
         "qua đời": "death_date",
         "từ trần": "death_date",
@@ -487,113 +449,50 @@ class QueryPipeline:
 
     # =========================================================================
 
-    def _normalize_entity_with_aliases(self, question: str, active_person: Optional[str] = None) -> Optional[str]:
-        """NEW: Check if question contains known literary pen names → prefer pen_name if in DB, else real name.
-        Args:
-            question: User question
-            active_person: Active person from session (prefer this for logs/DB search)
-        """
-        question_lower = question.lower()
-        
-        # Debug log
-        print(f"  [Entity Normalize] Question: '{question}' | Active: {active_person}")
-        
-        # Check if active_person (pen_name) exists in DB first
-        if active_person:
-            db_names = self._find_person_names_in_question(active_person)
-            if db_names:
-                print(f"  [Entity] Using active_person '{active_person}' (found in DB)")
-                return active_person
-        
-        # Fallback: Check question for pen_names
-        print(f"  [Entity] Dynamic aliases via DB Person.pen_name/real_name - add to data")
-        return None
-
-
-    def _generate_expanded_query(self, question: str) -> Dict[str, List[str]]:
-        """
-        NEW: LLM Query Expansion - Extract entities + expanded keywords before retrieval.
-        Cache results to avoid repeated calls.
-        """
-        cache_key = hash(question.lower())
-        if hasattr(self, '_expansion_cache') and cache_key in self._expansion_cache:
-            return self._expansion_cache[cache_key]
-
-        from llm.prompt_templates import QUERY_EXPANSION_PROMPT
-        prompt = QUERY_EXPANSION_PROMPT + f"\n\nCâu hỏi: '{question}'"
-
-        try:
-            from llm.llm_client import call_llm
-            response = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=0.1, max_tokens=400)
-
-            import json
-            expanded = json.loads(response)
-            
-            result = {
-                "entities": [e.strip() for e in expanded.get("entities", []) if e.strip()],
-                "expanded_keywords": [k.strip() for k in expanded.get("expanded_keywords", []) if k.strip()]
-            }
-
-            # Cache (limit size)
-            if not hasattr(self, '_expansion_cache'):
-                self._expansion_cache = {}
-            self._expansion_cache[cache_key] = result
-            if len(self._expansion_cache) > 50:  # LRU simple
-                oldest_key = next(iter(self._expansion_cache))
-                del self._expansion_cache[oldest_key]
-
-            print(f"  [LLM Expansion] {len(result['entities'])} entities + {len(result['expanded_keywords'])} keywords")
-            return result
-
-        except Exception as e:
-            print(f"  [LLM Expansion] Failed: {e} -> rule-based fallback")
-            return {"entities": [], "expanded_keywords": []}
-
     def _understand_query(self, question: str) -> Dict[str, Any]:
         """
-        Query Understanding: Rule-based + LLM Expansion (Gemini Flash Lite).
+        Phân tích câu hỏi - rule-based nhẹ, LLM chỉ là fallback.
+        
+        Returns:
+            {
+                "entity": "tên người/sự kiện",
+                "intent": "identity | birth_name | ACHIEVED | ...",
+                "target_type": "Person | Event | Dynasty | *",
+                "keywords": ["các từ khóa"]
+            }
         """
-        # 1. NEW: LLM Query Expansion FIRST (semantic gap bridge)
-        expanded = self._generate_expanded_query(question)
-
         question_lower = question.lower()
 
-        # 2. Entity: Prefer LLM entities -> rule-based/DB fallback
-        entity_candidate = expanded["entities"][0] if expanded["entities"] else None
-        if entity_candidate:
-            print(f"  [Entity LLM] '{entity_candidate}'")
+        # 1.1 Rule-based extraction - PRIORITIZE DB person names FIRST
+        # Try to find known person names from DB first (catches "Lê Long Đĩnh", "Trần Thái Tông", etc.)
+        db_names = self._find_person_names_in_question(question)
+        if db_names:
+            entity = db_names[0]  # Use first (most relevant) name from DB
         else:
-            entity_candidate = self._normalize_entity_with_aliases(question)
-            if not entity_candidate:
-                db_names = self._find_person_names_in_question(question)
-                entity_candidate = db_names[0] if db_names else self._extract_entity(question)
+            entity = self._extract_entity(question)
         
-        entity = entity_candidate
-        print(f"  [Query Understanding] Final Entity: '{entity}'")
-        
-        # 3. Keywords: base + LLM expanded
-        base_keywords = self._extract_keywords(question)
-        llm_keywords = expanded["entities"] + expanded["expanded_keywords"]
-        keywords = list(set(base_keywords + llm_keywords))  # Dedup
-        
-        # 4. Intent detection (unchanged)
-        intent = "identity"
+        keywords = self._extract_keywords(question)
+
+        # 1.2 Intent detection - Ưu tiên keyword DÀI HƠN trước
+        intent = "identity"  # default
+        # Sắp xếp theo độ dài giảm dần để ưu tiên "sinh năm" > "sinh"
         sorted_mappings = sorted(self.INTENT_MAPPING.items(), key=lambda x: len(x[0]), reverse=True)
         for keyword, mapped_intent in sorted_mappings:
             if keyword in question_lower:
                 intent = mapped_intent
                 break
 
-        # 5. Target type & aggregation (unchanged)
+        # 1.3 Target type inference (simple rule)
         target_type = self._infer_target_type(question_lower, intent)
+
+        # 1.4 Aggregation / comparison detection
         aggregation = self._llm_cypher_detection(question_lower, entity, intent)
 
         return {
             "entity": entity,
             "intent": intent,
             "target_type": target_type,
-            "keywords": keywords,  # Now LLM-expanded!
-            "llm_keywords": llm_keywords,
+            "keywords": keywords,
             "aggregation": aggregation,
             "original_question": question
         }
@@ -620,7 +519,7 @@ class QueryPipeline:
         
         try:
             with self.graph_db.driver.session(database=self.graph_db.database) as session:
-                # Query synonyms từ DB - IGNORE Neo4j warnings
+                # Query synonyms từ DB
                 result = session.run("""
                     MATCH (w1:Word)-[:SYNONYM]-(w2:Word)
                     RETURN w1.name as word1, w2.name as word2
@@ -654,14 +553,22 @@ class QueryPipeline:
                 return self._synonym_cache
                 
         except Exception as e:
-            print(f"  [Synonyms] DB load ignored warnings: {e}, using fallback")
+            # FIX: Bắt exception do label/relationship không tồn tại và dùng fallback
+            print(f"  [Synonyms] DB load failed: {e}, using fallback")
             return self._build_synonym_cache_from_groups()
 
     def _build_synonym_cache_from_groups(self) -> Dict[str, List[str]]:
-        """Fallback - call populate_synonyms.py if empty DB."""
-        print("  [Synonyms] Empty DB - run 'python populate_synonyms.py' first")
-        return {}
-
+        """Build synonym cache từ hard-coded groups."""
+        for group in EVENT_SYNONYM_GROUPS:
+            for word in group:
+                if word not in self._synonym_cache:
+                    self._synonym_cache[word] = []
+                # Add all other words in group as synonyms
+                for other in group:
+                    if other != word and other not in self._synonym_cache[word]:
+                        self._synonym_cache[word].append(other)
+        print(f"  [Synonyms] Built {len(self._synonym_cache)} synonyms from groups")
+        return self._synonym_cache
 
     def _get_synonyms(self, word: str) -> List[str]:
         """Get synonyms cho một từ."""
@@ -691,13 +598,6 @@ class QueryPipeline:
         particles = ['thứ mấy', 'bao lâu', 'bao lâu?', 'mấy năm', 'bao năm', 'bao giờ']
         for particle in particles:
             question_clean = question_clean.replace(particle, '')
-        
-        # === NEW: "ProperName sinh/mất năm nào?" pattern FIRST ===
-        temporal_pattern = r'^([A-ZÀ-ỹ][a-zà-ỹ\s]+?)(?:\s+(?:sinh|mất|ra\s+đời|chào\s+đời|qua\s+đời|ngày\s+mất)\s+(?:năm|ngày|tháng|khi\s+nào)\??)$'
-        temp_match = re.search(temporal_pattern, question, re.IGNORECASE)
-        if temp_match:
-            extracted = temp_match.group(1).strip()
-            return extracted
         
         # === CÁC PATTERN theo thứ tự ưu tiên ===
         patterns = [
@@ -1083,11 +983,6 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         if not agg:
             return None
 
-        # NEW: Birth/Death direct lookup
-        intent = query_info.get('intent')
-        if intent in ['birth_year', 'death_year', 'birth_date', 'death_date']:
-            return self._handle_temporal_query(query_info)
-
         # Handle new LLM-generated Cypher queries
         if agg.get('type') == 'cypher':
             cypher_query = agg.get('cypher_query', '')
@@ -1115,52 +1010,6 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             person_name = agg.get('person', '')
             return self._find_emperor_position(person_name, dynasty_name)
 
-        return None
-
-    def _handle_temporal_query(self, query_info: Dict[str, Any]) -> Optional[str]:
-        """Direct Cypher lookup for birth/death properties."""
-        entity = query_info.get('entity', '')
-        intent = query_info.get('intent', '')
-        if not entity:
-            return None
-        
-        cypher = """
-        MATCH (p:Person)
-        WHERE (CASE WHEN p.name IS NOT NULL THEN toLower(p.name) ELSE "" END) CONTAINS toLower($entity)
-           OR (CASE WHEN p.full_name IS NOT NULL THEN toLower(p.full_name) ELSE "" END) CONTAINS toLower($entity)
-        RETURN p.name as name, 
-               p.birth_year as birth_year, p.birth_date as birth_date,
-               p.death_year as death_year, p.death_date as death_date
-        LIMIT 3
-        """
-        try:
-            with self.graph_db.driver.session(database=self.graph_db.database) as session:
-                result = session.run(cypher, entity=entity)
-                records = list(result)
-                if records:
-                    for r in records:
-                        name = r.get('name', '')
-                        by = r.get('birth_year')
-                        bd = r.get('birth_date')
-                        dy = r.get('death_year')
-                        dd = r.get('death_date')
-                        
-                        info = []
-                        if intent in ['birth_year', 'birth_date'] and (by or bd):
-                            if by:
-                                info.append(f"sinh năm {by}")
-                            if bd:
-                                info.append(f"sinh ngày {bd}")
-                        elif intent in ['death_year', 'death_date'] and (dy or dd):
-                            if dy:
-                                info.append(f"mất năm {dy}")
-                            if dd:
-                                info.append(f"mất ngày {dd}")
-                        
-                        if info:
-                            return f"{name}: {'; '.join(info)}"
-        except Exception as e:
-            print(f"[Temporal Query] Error: {e}")
         return None
 
     def _execute_cypher_query(self, cypher_query: str) -> Optional[str]:
@@ -1253,25 +1102,19 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
 
     def _find_emperor_position(self, person_name: str, dynasty_name: str) -> Optional[str]:
         """Find the emperor's position (thứ mấy) in a dynasty by reign_start_year."""
-        from neo4j.exceptions import CypherTypeError, ResultFailedError
-        
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             # First, get the person's reign_start_year
-            try:
-                person_result = session.run(
-                    """
-                    MATCH (p:Person)
-                    WHERE (CASE WHEN p.name IS NOT NULL THEN toLower(p.name) ELSE "" END) CONTAINS toLower($person)
-                    RETURN p.name as name, toInteger(p.reign_start_year) as start_year
-                    LIMIT 1
-                    """,
-                    person=person_name
-                )
-                person_record = person_result.single()
-            except (CypherTypeError, ResultFailedError) as e:
-                print(f"  [Emperor Position] StringArray error: {str(e)[:80]}...")
-                return None
+            person_result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE toLower(p.name) CONTAINS toLower($person)
+                RETURN p.name as name, toInteger(p.reign_start_year) as start_year
+                LIMIT 1
+                """,
+                person=person_name
+            )
             
+            person_record = person_result.single()
             if not person_record:
                 return None
             
@@ -1282,23 +1125,19 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 return None
             
             # Find all emperors in the dynasty ordered by reign_start_year
-            try:
-                dynasty_result = session.run(
-                    """
-                    MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty)
-                    WHERE toLower(d.name) CONTAINS toLower($dynasty)
-                    AND p.reign_start_year IS NOT NULL
-                    WITH p, d, toInteger(p.reign_start_year) as start_y
-                    ORDER BY start_y ASC
-                    RETURN p.name as name, start_y as start_year
-                    """,
-                    dynasty=dynasty_name
-                )
-                emperors = list(dynasty_result)
-            except (CypherTypeError, ResultFailedError) as e:
-                print(f"  [Emperor Position] StringArray error in dynasty: {str(e)[:80]}...")
-                return None
+            dynasty_result = session.run(
+                """
+                MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty)
+                WHERE toLower(d.name) CONTAINS toLower($dynasty)
+                AND p.reign_start_year IS NOT NULL
+                WITH p, d, toInteger(p.reign_start_year) as start_y
+                ORDER BY start_y ASC
+                RETURN p.name as name, start_y as start_year
+                """,
+                dynasty=dynasty_name
+            )
             
+            emperors = list(dynasty_result)
             if not emperors:
                 return None
             
@@ -1323,138 +1162,33 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
 
     def _retrieve_candidates(self, query_info: Dict) -> List[Dict]:
         """
-        Parallel Hybrid Retrieval: Fulltext + Semantic → merged before other logic.
+        Tìm kiếm candidates - DB-driven, KHÔNG dùng LLM.
         """
         entity = query_info.get("entity", "")
         keywords = query_info.get("keywords", [])
         intent = query_info.get("intent", "")
-        question = query_info.get("original_question", "")
 
-        print(f"  [Candidates] Hybrid parallel retrieval for '{question[:50]}...'")
-        
-        # === 1. SPECIAL SEARCHES (rel/name/event - unchanged priority) === 
         candidates = []
         seen_ids = set()
 
-        # RELATIONSHIP (highest priority)
+        # === RELATIONSHIP-BASED SEARCH for all relationship intents ===
         relationship_intents = ["SUCCESSOR_OF", "PREDECESSOR_OF", "ADOPTED_CHILD_OF", "ADOPTIVE_PARENT_OF", 
                                "FOSTER_CHILD_OF", "FOSTER_PARENT_OF"]
         if intent in relationship_intents:
             rel_candidates = self._search_relationship_for_entity(entity, intent)
-            print(f"  [Rel] Found {len(rel_candidates)} for {intent}")
+            print(f"  [Relationship] Found {len(rel_candidates)} relationship candidates for {intent}")
             for c in rel_candidates:
-                cid = c.get("id")
-                if cid and cid not in seen_ids:
-                    c["score"] = max(c.get("score", 2.5), 2.5)
+                if c.get("id") not in seen_ids:
+                    c["score"] = 2.5
                     candidates.append(c)
-                    seen_ids.add(cid)
-
-        # NAME ALIAS (birth_name etc.)
-        name_intents = ["birth_name", "real_name", "temple_name", "original_name", "regnal_name"]
-        if intent in name_intents:
-            name_cands = self._search_name_alias_for_entity(entity, intent)
-            for c in name_cands:
-                cid = c.get("id")
-                if cid and cid not in seen_ids:
-                    c["score"] = max(c.get("score", 2.0), 2.0)
-                    candidates.append(c)
-                    seen_ids.add(cid)
-
-        # SYNONYM EXPANSION (rule-based)
-        expanded_keywords = self._expand_query_with_synonyms(keywords)
-        print(f"  [Synonym] Expanded {len(keywords)} → {len(expanded_keywords)} keywords")
-
-        # FINAL expanded keywords: LLM + synonym
-        llm_keywords = query_info.get("llm_keywords", [])
-        final_keywords = list(set(keywords + llm_keywords + expanded_keywords))
-        print(f"  [Final Keywords] Total: {len(final_keywords)} (base+LLM+synonyms)")
-
-        # === 2. HYBRID PARALLEL with LLM-expanded keywords ===
-        print(f"  [Hybrid Parallel] Running with LLM-expanded keywords...")
-        hybrid_cands = self.hybrid_retriever.retrieve(
-            query=question, 
-            keywords=final_keywords,  # LLM-expanded!
-            graph_weight=0.7, 
-            vector_weight=0.3
-        )
-        print(f"  [Hybrid] Retrieved {len(hybrid_cands)} parallel candidates")
-        
-        # Add hybrid results
-        for c in hybrid_cands:
-            cid = c.get("id")
-            if cid and cid not in seen_ids:
-                candidates.append(c)
-                seen_ids.add(cid)
-
-        # EVENT SEARCH (keep as parallel layer if intent=EVENT)
-        event_intents = ["EVENT", "TREATY", "MILITARY", "REBELLION"]
-        if intent in event_intents:
-            temporal_emperor = self._extract_emperor_from_query(keywords)
-            event_cands = self._search_events(entity, expanded_keywords, intent, temporal_emperor)
-            print(f"  [Event Parallel] Added {len(event_cands)} events")
-            for c in event_cands:
-                cid = c.get("id")
-                if cid and cid not in seen_ids:
-                    candidates.append(c)
-                    seen_ids.add(cid)
-
-        # === MINIMAL FALLBACKS ONLY if still <5 total === 
-        if len(candidates) < 5:
-            print("  [Fallback] Minimal fallback (complex entity/title search)")
-            # Keep title fallback (good for emperors)
-            title_cands = self._search_people_with_titles()
-            for c in title_cands[:5]:  # Limit to 5
-                cid = c.get("id")
-                if cid and cid not in seen_ids:
-                    c["score"] *= 0.7  # Lower priority
-                    candidates.append(c)
-                    seen_ids.add(cid)
-        if len(candidates) < 5:
-            print("  [Fallback] Keyword search (complex entity)")
-            kw_cands = self._fulltext_search("", expanded_keywords, include_events=True)
-            for c in kw_cands:
-                cid = c.get("id")
-                if cid and cid not in seen_ids:
-                    c["score"] = (c.get("score", 1.0) * 0.8)
-                    candidates.append(c)
-                    seen_ids.add(cid)
-
-            title_cands = self._search_people_with_titles()
-            for c in title_cands:
-                cid = c.get("id")
-                if cid and cid not in seen_ids:
-                    c["score"] = (c.get("score", 1.0) * 0.7)
-                    candidates.append(c)
-                    seen_ids.add(cid)
-
-        # === PRIORITY SORT (preserve existing logic) ===
-        # === ENHANCED SORT: Hybrid sources get higher priority ===
-        def sort_key(c):
-            source_priority = {
-                "relationship": 1.0,
-                "name_alias": 0.98,
-                "hybrid": 0.92,  # Boosted: parallel fulltext+semantic
-                "semantic": 0.90,  # Individual semantic sources
-                "fulltext": 0.85,
-                "event": 0.80,
-                "title_search": 0.65,
-                "specific_search": 0.70
-            }
-            # Handle compound sources like "semantic_PersonVectorIndex"
-            source_base = c.get("source", "").split('_')[0].split(':')[0]
-            priority = source_priority.get(source_base, 0.5)
-            return (1 - priority, -c.get("score", 0))
-        
-        candidates.sort(key=sort_key)
-        final_count = min(len(candidates), 20)
-        print(f"  [Sort] Final top-{final_count} candidates sorted by hybrid priority")
-        return candidates[:final_count]
+                    seen_ids.add(c.get("id"))
+                    print(f"    - Added relationship candidate: {c.get('name', 'N/A')} (score: {c.get('score', 0)})")
 
         # === DEBUG: Check if entity exists in DB ===
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             debug_result = session.run("""
                 MATCH (p:Person)
-                WHERE (CASE WHEN p.name IS NOT NULL THEN toLower(p.name) ELSE "" END) CONTAINS toLower($entity)
+                WHERE toLower(p.name) CONTAINS toLower($entity)
                 RETURN p.name as name, p.birth_date as birth_date, p.death_date as death_date
                 LIMIT 3
             """, entity=entity)
@@ -1508,9 +1242,40 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 candidates.append(c)
                 seen_ids.add(c.get("id"))
 
-        # REMOVED: Sequential soft/vector fallbacks (now parallel in hybrid_retriever)
-        # MINIMAL FALLBACK: Only title search if extremely low results after hybrid
-        pass
+        # === FALLBACK: If entity extraction failed (too long/complex), search with keywords instead ===
+        if len(candidates) < 5 and len(entity) > 30:
+            print(f"  [Fallback] Entity too complex ({len(entity)} chars), searching with keywords instead")
+            keyword_candidates = self._fulltext_search("", expanded_keywords, include_events=True)
+            for c in keyword_candidates:
+                if c.get("id") not in seen_ids:
+                    c["score"] = c.get("score", 1.0) * 0.8  # Lower score for fallback
+                    candidates.append(c)
+                    seen_ids.add(c.get("id"))
+            
+            # Additional fallback: Search for people with titles (potential emperors/rulers)
+            print(f"  [Fallback2] Searching for people with titles...")
+            title_search_candidates = self._search_people_with_titles()
+            for c in title_search_candidates:
+                if c.get("id") not in seen_ids:
+                    c["score"] = c.get("score", 1.0) * 0.7
+                    candidates.append(c)
+                    seen_ids.add(c.get("id"))
+
+        # === SOFT MATCHING (fallback) ===
+        if len(candidates) < 3:
+            soft_candidates = self._soft_matching_search(entity, expanded_keywords)
+            for c in soft_candidates:
+                if c.get("id") not in seen_ids:
+                    candidates.append(c)
+                    seen_ids.add(c.get("id"))
+
+        # === VECTOR SEARCH (fallback) ===
+        if len(candidates) < 3 and SEMANTIC_AVAILABLE:
+            vec_candidates = self._vector_search(entity)
+            for c in vec_candidates:
+                if c.get("id") not in seen_ids:
+                    candidates.append(c)
+                    seen_ids.add(c.get("id"))
 
         # === Sắp xếp theo score và loại bỏ duplicates ===
         def sort_key(c):
@@ -1710,8 +1475,8 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         try:
             result = session.run("""
                 MATCH (p:Person)
-                WHERE (CASE WHEN p.name IS NOT NULL THEN toLower(p.name) ELSE "" END) CONTAINS toLower($emperor)
-                   OR (CASE WHEN p.main_name IS NOT NULL THEN toLower(p.main_name) ELSE "" END) CONTAINS toLower($emperor)
+                WHERE toLower(p.name) CONTAINS toLower($emperor)
+                   OR toLower(p.main_name) CONTAINS toLower($emperor)
                 RETURN p.reign_start as start, p.reign_end as end
                 LIMIT 1
             """, emperor=emperor_name)
@@ -1828,7 +1593,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 for target_name in specific_names:
                     specific_result = session.run("""
                         MATCH (p:Person)
-                        WHERE (CASE WHEN p.name IS NOT NULL THEN toLower(p.name) ELSE "" END) CONTAINS toLower($name)
+                        WHERE toLower(p.name) CONTAINS toLower($name)
                         RETURN elementId(p) as id, p.name as name, p.title as title,
                                p.description as description
                         LIMIT 1
@@ -1900,8 +1665,6 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
 
     def _search_name_alias_for_entity(self, entity: str, intent: str) -> List[Dict]:
         """Tìm alias/tên thật của entity dựa trên intent."""
-        from neo4j.exceptions import CypherTypeError, ResultFailedError
-        
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             candidates = []
             
@@ -1915,40 +1678,30 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             }
             name_types = intent_to_nametype.get(intent, [intent])
             
-            # Tìm Person - case-insensitive (with error handling for StringArray properties)
-            try:
-                person_result = session.run("""
-                    MATCH (p:Person)
-                    WHERE (CASE WHEN p.name IS NOT NULL THEN toLower(p.name) ELSE "" END) CONTAINS toLower($entity)
-                       OR (CASE WHEN p.full_name IS NOT NULL THEN toLower(p.full_name) ELSE "" END) CONTAINS toLower($entity)
-                       OR (CASE WHEN p.alias IS NOT NULL THEN toLower(p.alias) ELSE "" END) CONTAINS toLower($entity)
-                    RETURN elementId(p) as peid, p.name as pname
-                    LIMIT 3
-                """, entity=entity)
-                person_list = list(person_result)  # Consume result early to catch errors
-            except (CypherTypeError, ResultFailedError) as e:
-                print(f"  [Name Search] StringArray type error in person search: {str(e)[:80]}... - returning empty")
-                return []
+            # Tìm Person - case-insensitive
+            person_result = session.run("""
+                MATCH (p:Person)
+                WHERE toLower(p.name) CONTAINS toLower($entity)
+                   OR toLower(p.full_name) CONTAINS toLower($entity)
+                   OR toLower(p.alias) CONTAINS toLower($entity)
+                RETURN elementId(p) as peid, p.name as pname
+                LIMIT 3
+            """, entity=entity)
             
-            for pr in person_list:
+            for pr in person_result:
                 pid = pr["peid"]
                 pname = pr["pname"]
                 
                 # Lấy TẤT CẢ Name nodes
-                try:
-                    all_names_result = session.run("""
-                        MATCH (p:Person)-[r]-(n:Name)
-                        WHERE elementId(p) = $peid
-                        RETURN n.value as name_value, n.name_type as name_type, type(r) as rel_type
-                        LIMIT 10
-                    """, peid=str(pid))
-                    names_list = list(all_names_result)  # Consume result early to catch errors
-                except (CypherTypeError, ResultFailedError) as e:
-                    print(f"  [Name Search] StringArray type error for person {pid}: {str(e)[:80]}... - skipping")
-                    continue
+                all_names_result = session.run("""
+                    MATCH (p:Person)-[r]-(n:Name)
+                    WHERE elementId(p) = $peid
+                    RETURN n.value as name_value, n.name_type as name_type, type(r) as rel_type
+                    LIMIT 10
+                """, peid=pid)
                 
                 names = []
-                for nr in names_list:
+                for nr in all_names_result:
                     nv = nr.get("name_value", "")
                     if nv:
                         names.append({

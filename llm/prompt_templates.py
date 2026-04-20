@@ -237,20 +237,6 @@ Bạn là trợ lý AI chuyên tổng hợp thông tin từ Knowledge Graph.
 📝 Trả lời tổng hợp (100% tiếng Việt, rõ ràng, tự nhiên):
 """
 
-QUERY_EXPANSION_PROMPT = """
-Bạn là một chuyên gia xử lý ngôn ngữ tự nhiên (NLP) hỗ trợ cho hệ thống tìm kiếm GraphRAG.
-Nhiệm vụ của bạn là phân tích câu hỏi của người dùng và trích xuất thông tin để tối ưu hóa việc truy vấn cơ sở dữ liệu.
-
-Hãy trả về ĐÚNG MỘT đối tượng JSON bao gồm 2 mảng:
-1. "entities": Chứa các danh từ riêng, tên người, địa danh, hoặc chủ thể chính (Ví dụ: "Nam Cao", "Lê Lợi").
-2. "expanded_keywords": Chứa các từ khóa trong câu hỏi CỘNG VỚI các từ đồng nghĩa, từ liên quan chặt chẽ đến hành động/tính chất đó để mở rộng phạm vi tìm kiếm (Ví dụ: "chiến thắng" -> "đánh bại", "đánh thắng", "khởi nghĩa"; "nổi tiếng" -> "tiêu biểu", "đặc sắc", "chính").
-
-{{
-  "entities": ["..."],
-  "expanded_keywords": ["..."]
-}}
-"""
-
 CYPHER_DETECTION_PROMPT = """
 Bạn là chuyên gia về Neo4j và Cypher queries. Phân tích câu hỏi tiếng Việt và quyết định xem có cần dùng Cypher query để trả lời hay không.
 
@@ -276,4 +262,5 @@ Ví dụ:
 Câu hỏi: "vua nào trị vì ngắn nhất trong triều Nguyễn"
 Trả về: {{"needs_cypher": true, "cypher_query": "MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty) WHERE toLower(d.name) CONTAINS 'nguyễn' RETURN p.name ORDER BY p.reign_duration_years ASC LIMIT 1", "explanation": "tìm vua có thời gian trị vì ngắn nhất"}}
 """
+
 
