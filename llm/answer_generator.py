@@ -118,7 +118,14 @@ VÍ DỤ MINH HỌA:
   * Response: "Tên thật của Bảo Đại là Nguyễn Phúc Vĩnh Thụy.\n\nActive person: Bảo Đại"
 
 - Format chính xác: "\n\nActive person: [tên]" (hai dòng trống rồi mới viết)
-- KHÔNG bao giờ quên thêm này!"""
+- KHÔNG bao giờ quên thêm này!
+
+=== RULE 7: CÂU HỎI NHIỀU Ý PHẢI TRẢ LỜI ĐỦ Ý ===
+- Nếu câu hỏi chứa nhiều vế (ví dụ có "và", "đồng thời", "cũng như"), PHẢI trả lời lần lượt từng ý.
+- Không được chỉ trả lời một ý rồi dừng.
+- Nếu dữ liệu thiếu một ý, phải nói rõ ý nào thiếu dữ liệu thay vì bỏ qua.
+- Ví dụ: "X sinh năm nào và quê ở đâu?" → phải có cả năm sinh và quê quán (hoặc ghi rõ thiếu quê quán)."""
+
 
 
 def clean_markdown_format(text: str) -> str:
