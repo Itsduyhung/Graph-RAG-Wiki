@@ -2556,7 +2556,7 @@ Gợi ý:
 
 
 # =============================================================================
-# STANDALONE FUNCTION (for streamlit)
+# STANDALONE FUNCTION (for external callers)
 # =============================================================================
 
 def ask_agent(question: str) -> dict:
