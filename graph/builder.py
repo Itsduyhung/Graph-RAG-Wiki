@@ -1,5 +1,6 @@
 # graph/builder.py
 """Graph construction utilities - generic và linh hoạt cho bất kỳ node/relationship type nào."""
+import re
 from typing import List, Dict, Any, Optional, Union
 from .storage import GraphDB
 
@@ -9,6 +10,23 @@ class GraphBuilder:
     
     def __init__(self, graph_db: GraphDB = None):
         self.graph_db = graph_db or GraphDB()
+
+    @staticmethod
+    def _sanitize_cypher_identifier(value: str, fallback: str = "Entity") -> str:
+        """Neo4j label/type chỉ chấp nhận chữ, số, và underscore."""
+        raw = str(value or "").strip()
+        if not raw:
+            return fallback
+
+        sanitized = re.sub(r"[^A-Za-z0-9_]", "_", raw)
+        sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+        if not sanitized:
+            return fallback
+
+        if not re.match(r"^[A-Za-z_]", sanitized):
+            sanitized = f"_{sanitized}"
+
+        return sanitized
     
     def create_node(
         self, 
@@ -47,11 +65,13 @@ class GraphBuilder:
         # Chỉ set những properties không có trong match_props
         props_to_set = {k: v for k, v in (props or {}).items() if k not in match_props}
         
+        safe_node_type = self._sanitize_cypher_identifier(node_type, fallback="Entity")
+
         # Tạo query động với MERGE và SET
         match_keys = ", ".join([f"{k}: $match_{k}" for k in match_props.keys()])
         
         query = f"""
-        MERGE (n:{node_type} {{{match_keys}}})
+        MERGE (n:{safe_node_type} {{{match_keys}}})
         """
         
         # Set properties nếu có (chỉ những properties không dùng để match)
@@ -116,10 +136,14 @@ class GraphBuilder:
             rel_set_props = ", ".join([f"r.{k} = $rel_{k}" for k in rel_props.keys()])
             rel_set = f"SET {rel_set_props}\n"
         
+        safe_from_type = self._sanitize_cypher_identifier(from_type, fallback="Entity")
+        safe_to_type = self._sanitize_cypher_identifier(to_type, fallback="Entity")
+        safe_rel_type = self._sanitize_cypher_identifier(rel_type, fallback="RELATED_TO")
+
         query = f"""
-        MATCH (from:{from_type} {{{from_keys}}})
-        MATCH (to:{to_type} {{{to_keys}}})
-        MERGE (from)-[r:{rel_type}]{direction}(to)
+        MATCH (from:{safe_from_type} {{{from_keys}}})
+        MATCH (to:{safe_to_type} {{{to_keys}}})
+        MERGE (from)-[r:{safe_rel_type}]{direction}(to)
         {rel_set}RETURN r
         """
         
