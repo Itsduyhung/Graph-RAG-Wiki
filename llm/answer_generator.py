@@ -156,6 +156,112 @@ def clean_markdown_format(text: str) -> str:
     return text
 
 
+def clean_relationship_codes(text: str) -> str:
+    """
+    Remove English relationship codes leaked by LLM output.
+    Examples:
+    - "mối quan hệ \"FRIEND_OF\" (bạn bè)" -> "mối quan hệ bạn bè"
+    - "là OPPONENT_OF_IDEOLOGY" -> "là"
+    """
+    # Known relationship labels -> Vietnamese natural phrases.
+    relationship_map = {
+        "FRIEND_OF": "bạn bè",
+        "OPPONENT_OF_IDEOLOGY": "đối thủ về tư tưởng",
+        "ALLY_OF": "đồng minh",
+        "RIVAL_OF": "đối thủ",
+        "CHILD_OF": "con của",
+        "FATHER_OF": "cha của",
+        "MOTHER_OF": "mẹ của",
+        "PARENT_OF": "cha mẹ của",
+        "SPOUSE_OF": "vợ/chồng của",
+        "MARRIED_TO": "kết hôn với",
+        "SIBLING_OF": "anh/chị/em của",
+        "MENTOR_OF": "người cố vấn của",
+        "STUDENT_OF": "học trò của",
+        "SUCCESSOR_OF": "kế nhiệm",
+        "PREDECESSOR_OF": "tiền nhiệm",
+        "FOUNDED": "sáng lập",
+        "WORKS_AT": "làm việc tại",
+        "BORN_IN": "sinh tại",
+        "BORN_AT": "sinh tại",
+        "BORN_ON": "sinh ngày",
+        "DIED_IN": "mất tại",
+        "DIED_ON": "mất ngày",
+        "PARTICIPATED_IN": "tham gia",
+        "LED": "lãnh đạo",
+        "RULED": "cai trị",
+        "CROWNED_AS": "đăng quang làm",
+        "CARED_BY": "được nuôi dạy bởi",
+        "ADOPTED_CHILD_OF": "con nuôi của",
+        "ADOPTED_BY": "được nhận làm con nuôi bởi",
+        "MEMBER_OF": "thành viên của",
+        "BELONGS_TO": "thuộc về",
+    }
+
+    # Replace mapped labels first (quoted or unquoted).
+    for code, vi_text in relationship_map.items():
+        text = re.sub(rf'["\']?\b{re.escape(code)}\b["\']?', vi_text, text)
+
+    # Remove common English schema words that occasionally leak.
+    text = re.sub(r'\b(relationship|relationships|property|properties|node|nodes|edge|edges)\b', '', text, flags=re.IGNORECASE)
+
+    # Remove any remaining ALL_CAPS labels with underscores (fallback for unknown relation names).
+    text = re.sub(r'["\']?\b[A-Z]+(?:_[A-Z]+)+\b["\']?', '', text)
+    # If a Vietnamese gloss remains in parentheses, unwrap it: "(bạn bè)" -> "bạn bè"
+    text = re.sub(r'\(([^()]+)\)', r'\1', text)
+    # Normalize extra spaces created by removals.
+    text = re.sub(r'\s+,', ',', text)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r' +([,.;:!?])', r'\1', text)
+    text = re.sub(r'\n[ \t]+', '\n', text)
+    return text.strip()
+
+
+def naturalize_vietnamese_response(text: str) -> str:
+    """
+    Make cleaned response sound natural after relationship-code removal.
+    Focus on removing broken glue words and empty patterns.
+    """
+    # Preserve "Active person" line exactly as-is.
+    active_person_match = re.search(r'\n\nActive person:.*$', text, flags=re.DOTALL)
+    active_person_suffix = active_person_match.group(0) if active_person_match else ""
+    body = text[:active_person_match.start()] if active_person_match else text
+
+    # Remove awkward leftovers created by deleted labels.
+    cleanup_patterns = [
+        (r'\bcó mối quan hệ\s*[:\-]?\s*(?=[,.;!?]|$)', ''),
+        (r'\blà\s*(?=[,.;!?]|$)', ''),
+        (r'\bvới\s*(?=[,.;!?]|$)', ''),
+        (r'\bvà\s*(?=[,.;!?]|$)', ''),
+        (r'\bbao gồm\s*[:\-]?\s*(?=[,.;!?]|$)', ''),
+        (r'\bnhư\s+sau\s*[:\-]?\s*(?=[,.;!?]|$)', ''),
+    ]
+    for pattern, replacement in cleanup_patterns:
+        body = re.sub(pattern, replacement, body, flags=re.IGNORECASE)
+
+    # Collapse duplicated punctuation and dangling separators.
+    body = re.sub(r'[,:;]\s*[,:;]+', ': ', body)
+    body = re.sub(r'\.\s*\.', '.', body)
+    body = re.sub(r'\n{3,}', '\n\n', body)
+    body = re.sub(r'[ \t]{2,}', ' ', body)
+    body = re.sub(r' +([,.;:!?])', r'\1', body)
+    body = re.sub(r'([,;:])\s*(\n|$)', r'.\2', body)
+
+    # Remove empty list-style lines like "- ." or "1. ."
+    body = re.sub(r'^\s*[-*]\s*[.,;:!?]?\s*$', '', body, flags=re.MULTILINE)
+    body = re.sub(r'^\s*\d+\.\s*[.,;:!?]?\s*$', '', body, flags=re.MULTILINE)
+
+    # Trim each line and drop empty noise lines.
+    lines = [line.strip() for line in body.splitlines()]
+    lines = [line for line in lines if line]
+    body = "\n".join(lines).strip()
+
+    if not body:
+        body = "Hiện tại mình chưa tìm thấy thông tin này trong dữ liệu."
+
+    return f"{body}{active_person_suffix}".strip()
+
+
 class AnswerGenerator:
     """Generate answers from retrieved graph context."""
 
@@ -199,8 +305,11 @@ class AnswerGenerator:
             default_temp = float(os.getenv('LLM_TEMPERATURE', '0.1'))
             # Use timeout=30s for full context (verifying all search results)
             answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or default_temp, timeout=30)
-            # Clean markdown formatting from the answer
-            return clean_markdown_format(answer)
+            # Clean markdown formatting and remove leaked English relationship labels
+            cleaned_answer = clean_markdown_format(answer)
+            cleaned_answer = clean_relationship_codes(cleaned_answer)
+            cleaned_answer = naturalize_vietnamese_response(cleaned_answer)
+            return cleaned_answer
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"
 
@@ -245,6 +354,8 @@ class AnswerGenerator:
             
             # Clean markdown formatting from the full answer
             cleaned_answer = clean_markdown_format(full_answer)
+            cleaned_answer = clean_relationship_codes(cleaned_answer)
+            cleaned_answer = naturalize_vietnamese_response(cleaned_answer)
             
             # Yield the cleaned answer (could yield line by line or all at once)
             # Yield all at once to preserve exact formatting
