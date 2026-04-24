@@ -457,10 +457,15 @@ class GraphRagWorker:
                 "[GRAPH_WEBHOOK_SKIPPED] task_id=%s reason=PIPELINE_WEBHOOK_URL not configured",
                 task_id,
             )
+            print(
+                f"[GRAPH_WEBHOOK_SKIPPED] task_id={task_id} reason=PIPELINE_WEBHOOK_URL not configured",
+                flush=True,
+            )
             return
 
         if not task_id:
             logger.warning("[GRAPH_WEBHOOK_SKIPPED] reason=missing task_id")
+            print("[GRAPH_WEBHOOK_SKIPPED] reason=missing task_id", flush=True)
             return
 
         payload = {
@@ -483,6 +488,10 @@ class GraphRagWorker:
                 self.pipeline_webhook_url,
                 status,
             )
+            print(
+                f"[GRAPH_WEBHOOK_CALLING] task_id={task_id} url={self.pipeline_webhook_url} status={status}",
+                flush=True,
+            )
             response = requests.post(
                 self.pipeline_webhook_url,
                 json=payload,
@@ -496,13 +505,25 @@ class GraphRagWorker:
                     response.status_code,
                     response.text[:300],
                 )
+                print(
+                    f"[GRAPH_WEBHOOK_FAILED] task_id={task_id} http_status={response.status_code}",
+                    flush=True,
+                )
             else:
                 logger.info("[GRAPH_WEBHOOK_SUCCESS] task_id=%s http_status=%s", task_id, response.status_code)
+                print(
+                    f"[GRAPH_WEBHOOK_SUCCESS] task_id={task_id} http_status={response.status_code}",
+                    flush=True,
+                )
         except Exception as exc:
             logger.warning(
                 "[GRAPH_WEBHOOK_FAILED] task_id=%s error=%s",
                 task_id,
                 str(exc),
+            )
+            print(
+                f"[GRAPH_WEBHOOK_FAILED] task_id={task_id} error={str(exc)}",
+                flush=True,
             )
 
     @staticmethod
