@@ -1063,10 +1063,12 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
 
                     info = []
                     if intent in ['birth_year', 'birth_date'] and (by or bd):
-                        if by:
-                            info.append(f"sinh năm {by}")
+                        # Birth-related questions: prefer full birth_date output only.
+                        # If birth_date is missing, fallback to birth_year.
                         if bd:
                             info.append(f"sinh ngày {bd}")
+                        elif by:
+                            info.append(f"sinh năm {by}")
                     elif intent in ['death_year', 'death_date'] and (dy or dd):
                         if dy:
                             info.append(f"mất năm {dy}")
