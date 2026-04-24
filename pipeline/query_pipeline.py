@@ -264,6 +264,21 @@ class QueryPipeline:
         "băng hà": "death_date",
         "tắt thở": "death_date",
         "hưởng thọ": "death_date",
+        # Location / Notable works
+        "ở đâu": "location",
+        "sống ở": "location",
+        "lưu vong ở": "location",
+        "lưu lạc ở": "location",
+        "tác phẩm": "notable_works",
+        "tác phẩm tiêu biểu": "notable_works",
+        "các tác phẩm": "notable_works",
+        "thành tựu": "achievements",
+        # Burial
+        "ngày chôn cất": "burial_date",
+        "ngày an táng": "burial_date",
+        "chôn cất năm": "burial_date",
+        "an táng năm": "burial_date",
+        "nơi yên nghỉ": "burial_date",
         # Lên ngôi / Đăng quang
         "lên ngôi": "reign_start",
         "đăng quang": "reign_start",
@@ -470,17 +485,30 @@ class QueryPipeline:
             entity = db_names[0]  # Use first (most relevant) name from DB
         else:
             entity = self._extract_entity(question)
+            caps = re.findall(r'\b[A-ZÀ-Ỹ][a-zà-ỹ]+\s+[A-ZÀ-Ỹ][a-zà-ỹ]+\b', question)
+            if caps and str(entity).lower() in {"nêu", "kể", "cho biết", "trình bày", "liệt kê"}:
+                entity = caps[0].strip()
         
         keywords = self._extract_keywords(question)
 
-        # 1.2 Intent detection - Ưu tiên keyword DÀI HƠN trước
+        # 1.2 Intent detection - ưu tiên location/notable_works trước temporal
         intent = "identity"  # default
-        # Sắp xếp theo độ dài giảm dần để ưu tiên "sinh năm" > "sinh"
-        sorted_mappings = sorted(self.INTENT_MAPPING.items(), key=lambda x: len(x[0]), reverse=True)
-        for keyword, mapped_intent in sorted_mappings:
-            if keyword in question_lower:
+        if ("ở đâu" in question_lower or "lưu vong ở" in question_lower or "sống ở" in question_lower) and \
+           any(w in question_lower for w in ["sống", "lưu vong", "lưu lạc"]):
+            intent = "location"
+
+        high_priority_intents = ["location", "notable_works", "achievements"]
+        for keyword, mapped_intent in self.INTENT_MAPPING.items():
+            if keyword in question_lower and mapped_intent in high_priority_intents:
                 intent = mapped_intent
                 break
+
+        if intent == "identity":
+            sorted_mappings = sorted(self.INTENT_MAPPING.items(), key=lambda x: len(x[0]), reverse=True)
+            for keyword, mapped_intent in sorted_mappings:
+                if keyword in question_lower:
+                    intent = mapped_intent
+                    break
 
         # 1.3 Target type inference (simple rule)
         target_type = self._infer_target_type(question_lower, intent)
@@ -692,63 +720,54 @@ class QueryPipeline:
             return []
         
         try:
+            question_lower = question.lower()
+            words = re.findall(r'[\wÀ-ỹ]+', question)
+            potential_names = []
+
+            for i in range(len(words)):
+                for length in [3, 2]:
+                    if i + length <= len(words):
+                        phrase = " ".join(words[i:i + length])
+                        if phrase.lower() not in ["sinh năm", "mất năm", "là ai", "ai là", "tên của"]:
+                            potential_names.append(phrase)
+            for word in words:
+                if len(word) >= 2 and word.lower() not in ["sinh", "mất", "năm", "bao", "nhiêu", "nào", "là", "ai", "gì", "đâu", "của", "tại"]:
+                    potential_names.append(word)
+
+            if not potential_names:
+                return []
+
+            found_names = []
             with self.graph_db.driver.session(database=self.graph_db.database) as session:
-                # Query all person names from database
-                result = session.run("""
-                    MATCH (p:Person)
-                    RETURN p.name as name, p.full_name as full_name, p.other_name as other_name
-                    LIMIT 500
-                """)
-                
-                found_names = []
-                question_lower = question.lower()
-                record_count = 0
-                
-                for record in result:
-                    record_count += 1
-                    name = (record.get("name") or "").strip()
-                    full_name = (record.get("full_name") or "").strip()
-                    other_name = (record.get("other_name") or "").strip()
-                    
-                    # Check if any name appears in question (exact match or as suffix)
-                    found_match = False
-                    match_specificity = 0  # Track how specific the match is
-                    
-                    for candidate_name in [name, full_name, other_name]:
-                        if not candidate_name or len(candidate_name) <= 2:
+                for candidate in potential_names:
+                    candidate_lower = re.sub(r"[^\wÀ-ỹ\s]", "", candidate.lower()).strip()
+                    if len(candidate_lower) <= 2:
+                        continue
+
+                    result = session.run("""
+                        MATCH (p:Person)
+                        WHERE toLower(coalesce(toStringOrNull(p.name), "")) CONTAINS $search_term
+                           OR toLower(coalesce(toStringOrNull(p.full_name), "")) CONTAINS $search_term
+                           OR toLower(coalesce(toStringOrNull(p.other_name), "")) CONTAINS $search_term
+                           OR toLower(coalesce(toStringOrNull(p.real_name), "")) CONTAINS $search_term
+                           OR toLower(coalesce(toStringOrNull(p.birth_name), "")) CONTAINS $search_term
+                        RETURN p.name as name
+                        LIMIT 100
+                    """, {"search_term": candidate_lower})
+
+                    for record in result:
+                        name = (record.get("name") or "").strip()
+                        if not name or len(name) <= 2:
                             continue
-                            
-                        candidate_lower = candidate_name.lower()
-                        
-                        # Try exact match first (e.g., "lý chiêu hoàng" in question)
-                        if candidate_lower in question_lower:
-                            # FIX: Much higher score for exact match to ensure correct priority
-                            found_names.append((candidate_name, 5000 + len(candidate_lower.split())))  # Exact match = highest priority
-                            found_match = True
-                            break
-                        
-                        # Try suffix match for compound names (e.g., "chiêu hoàng" matches "lý chiêu hoàng")
-                        # FIX: Require longer suffix to avoid false matches like "văn" matching both
-                        name_words = candidate_lower.split()
-                        for i in range(1, len(name_words)):
-                            suffix = " ".join(name_words[i:])  # "chiêu hoàng", "hoàng", etc.
-                            # FIX: Minimum 3 chars to avoid short matches like "văn" matching everything
-                            if len(suffix) >= 5 and suffix in question_lower:
-                                # Score = number of words in suffix * 10 (longer suffix = more specific)
-                                specificity = len(suffix.split()) * 10
-                                found_names.append((candidate_name, specificity))
-                                found_match = True
-                                break
-                        if found_match:
-                            break
-                
-                # Sort by specificity DESC (higher = more specific), then by length DESC
-                # FIX: Exact matches (1000+) should always come FIRST
-                found_names.sort(key=lambda x: (x[1], len(x[0])), reverse=True)
-                result_names = [name for name, _ in found_names]
-                
-                # Return names ordered by specificity (not just length!)
-                return result_names
+                        if name.lower() in question_lower:
+                            found_names.append((name, 5000 + len(name.split())))
+
+            found_names_dict = {}
+            for name, score in found_names:
+                if name not in found_names_dict or score > found_names_dict[name]:
+                    found_names_dict[name] = score
+            sorted_names = sorted(found_names_dict.items(), key=lambda x: (x[1], len(x[0])), reverse=True)
+            return [name for name, _ in sorted_names]
         except Exception as e:
             print(f"  [ERROR] _find_person_names_in_question failed: {str(e)[:100]}")
             return []
@@ -1012,6 +1031,210 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
 
         return None
 
+    def _handle_temporal_query(self, query_info: Dict[str, Any]) -> Optional[str]:
+        """Direct Cypher lookup for birth/death/burial properties."""
+        entity = query_info.get('entity', '')
+        intent = query_info.get('intent', '')
+        if not entity:
+            return None
+
+        cypher = """
+        MATCH (p:Person)
+        WHERE toLower(coalesce(toStringOrNull(p.name), "")) CONTAINS toLower($entity)
+           OR toLower(coalesce(toStringOrNull(p.full_name), "")) CONTAINS toLower($entity)
+           OR toLower(coalesce(toStringOrNull(p.real_name), "")) CONTAINS toLower($entity)
+           OR toLower(coalesce(toStringOrNull(p.birth_name), "")) CONTAINS toLower($entity)
+        RETURN p.name as name,
+               p.birth_year as birth_year, p.birth_date as birth_date,
+               p.death_year as death_year, p.death_date as death_date,
+               p.burial_date as burial_date
+        LIMIT 3
+        """
+        try:
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                records = list(session.run(cypher, entity=entity))
+                for r in records:
+                    name = r.get('name', '')
+                    by = r.get('birth_year')
+                    bd = r.get('birth_date')
+                    dy = r.get('death_year')
+                    dd = r.get('death_date')
+                    burid = r.get('burial_date')
+
+                    info = []
+                    if intent in ['birth_year', 'birth_date'] and (by or bd):
+                        if by:
+                            info.append(f"sinh năm {by}")
+                        if bd:
+                            info.append(f"sinh ngày {bd}")
+                    elif intent in ['death_year', 'death_date'] and (dy or dd):
+                        if dy:
+                            info.append(f"mất năm {dy}")
+                        if dd:
+                            info.append(f"mất ngày {dd}")
+                    elif intent == 'burial_date' and burid:
+                        info.append(f"an táng: {burid}")
+
+                    if info:
+                        return f"{name}: {'; '.join(info)}"
+        except Exception as e:
+            print(f"[Temporal Query] Error: {e}")
+        return None
+
+    def _handle_notable_works_query(self, query_info: Dict[str, Any]) -> Optional[str]:
+        """Direct lookup for notable works to stabilize equivalent phrasings."""
+        entity = query_info.get("entity", "")
+        if not entity:
+            return None
+
+        cypher = """
+        MATCH (p:Person)
+        WHERE toLower(coalesce(toStringOrNull(p.name), "")) CONTAINS toLower($entity)
+           OR toLower(coalesce(toStringOrNull(p.full_name), "")) CONTAINS toLower($entity)
+           OR toLower(coalesce(toStringOrNull(p.other_name), "")) CONTAINS toLower($entity)
+        RETURN p.name as name,
+               p.notable_works as notable_works,
+               p.works as works
+        LIMIT 3
+        """
+        try:
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                records = list(session.run(cypher, entity=entity))
+                for r in records:
+                    name = r.get("name") or entity
+                    work_values: List[str] = []
+                    for key in ["notable_works", "works"]:
+                        value = r.get(key)
+                        if isinstance(value, list):
+                            work_values.extend([str(v).strip() for v in value if str(v).strip()])
+                        elif value:
+                            raw = str(value).strip()
+                            if raw:
+                                parts = [p.strip(" .;-") for p in re.split(r"[;\n•\\-]+", raw) if p.strip(" .;-")]
+                                work_values.extend(parts if parts else [raw])
+
+                    deduped = []
+                    seen = set()
+                    for item in work_values:
+                        k = item.lower()
+                        if k not in seen:
+                            seen.add(k)
+                            deduped.append(item)
+
+                    if deduped:
+                        return f"Các tác phẩm tiêu biểu của {name} gồm: {', '.join(deduped[:8])}."
+        except Exception as e:
+            print(f"[Notable Works Query] Error: {e}")
+        return None
+
+    def _is_compound_question(self, question: str) -> bool:
+        """Detect multi-intent question that should avoid direct short-circuit answers."""
+        q = (question or "").lower()
+        if not q:
+            return False
+
+        has_connector = any(token in q for token in [" và ", " đồng thời ", " cũng như ", ", và "])
+        temporal_markers = ["sinh năm", "ngày sinh", "năm sinh", "mất năm", "ngày mất", "qua đời"]
+        location_markers = ["ở đâu", "quê ở đâu", "quê quán", "sinh ở đâu", "quê"]
+        asks_temporal = any(k in q for k in temporal_markers)
+        asks_location = any(k in q for k in location_markers)
+        return has_connector and (asks_temporal and asks_location)
+
+    def _should_use_direct_notable_works(self, question: str) -> bool:
+        """Use direct notable-works only for simple list-type questions."""
+        q = (question or "").lower()
+        if not q:
+            return False
+
+        simple_patterns = [
+            "tác phẩm tiêu biểu nào",
+            "những tác phẩm tiêu biểu",
+            "các tác phẩm tiêu biểu",
+            "có những tác phẩm",
+            "nổi tiếng với tác phẩm nào",
+            "tác phẩm nào"
+        ]
+        contextual_patterns = [
+            "trong hoàn cảnh",
+            "hoàn cảnh nào",
+            "vì sao",
+            "như thế nào",
+            "khi nào",
+            "ở đâu",
+            "ý nghĩa",
+            "nội dung",
+            "phân tích"
+        ]
+
+        if any(k in q for k in contextual_patterns):
+            return False
+        return any(k in q for k in simple_patterns)
+
+    def _is_birth_and_location_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        birth_markers = ["sinh năm", "ngày sinh", "năm sinh", "sinh khi nào"]
+        location_markers = ["quê ở đâu", "quê quán", "quê", "sinh ở đâu", "ở đâu"]
+        return any(k in q for k in birth_markers) and any(k in q for k in location_markers)
+
+    def _handle_birth_and_location_query(self, query_info: Dict[str, Any]) -> Optional[str]:
+        """Answer compound questions asking both birth time and birthplace."""
+        entity = query_info.get("entity", "")
+        if not entity:
+            return None
+
+        cypher = """
+        MATCH (p:Person)
+        WHERE toLower(coalesce(toStringOrNull(p.name), "")) CONTAINS toLower($entity)
+           OR toLower(coalesce(toStringOrNull(p.full_name), "")) CONTAINS toLower($entity)
+           OR toLower(coalesce(toStringOrNull(p.real_name), "")) CONTAINS toLower($entity)
+           OR toLower(coalesce(toStringOrNull(p.birth_name), "")) CONTAINS toLower($entity)
+        RETURN p.name as name,
+               p.birth_year as birth_year,
+               p.birth_date as birth_date,
+               p.birth_place as birth_place,
+               p.hometown as hometown
+        LIMIT 3
+        """
+        try:
+            with self.graph_db.driver.session(database=self.graph_db.database) as session:
+                records = list(session.run(cypher, entity=entity))
+                if not records:
+                    return None
+
+                r = records[0]
+                name = r.get("name") or entity
+                birth_date = r.get("birth_date")
+                birth_year = r.get("birth_year")
+                birth_place = r.get("birth_place") or r.get("hometown")
+                if birth_place:
+                    # Cleanup occasional HTML/noisy values from raw ingestion.
+                    cleaned_place = re.sub(r"<[^>]+>", " ", str(birth_place))
+                    cleaned_place = re.sub(r"\s+", " ", cleaned_place).strip()
+                    lower_clean = cleaned_place.lower()
+                    if (
+                        len(cleaned_place) > 120
+                        or "http" in lower_clean
+                        or "<" in cleaned_place
+                        or "href" in lower_clean
+                        or "</" in cleaned_place
+                    ):
+                        cleaned_place = ""
+                    birth_place = cleaned_place
+
+                birth_text = None
+                if birth_date:
+                    birth_text = f"sinh ngày {birth_date}"
+                elif birth_year:
+                    birth_text = f"sinh năm {birth_year}"
+                else:
+                    birth_text = "chưa có dữ liệu rõ về năm sinh"
+
+                place_text = f"quê ở {birth_place}" if birth_place else "chưa có dữ liệu rõ về quê quán"
+                return f"{name} {birth_text} và {place_text}."
+        except Exception as e:
+            print(f"[Birth+Location Query] Error: {e}")
+            return None
+
     def _execute_cypher_query(self, cypher_query: str) -> Optional[str]:
         """Execute a Cypher query and format the result as a natural language answer."""
         try:
@@ -1188,7 +1411,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
         with self.graph_db.driver.session(database=self.graph_db.database) as session:
             debug_result = session.run("""
                 MATCH (p:Person)
-                WHERE toLower(p.name) CONTAINS toLower($entity)
+                WHERE toLower(coalesce(toStringOrNull(p.name), "")) CONTAINS toLower($entity)
                 RETURN p.name as name, p.birth_date as birth_date, p.death_date as death_date
                 LIMIT 3
             """, entity=entity)
@@ -1681,9 +1904,9 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
             # Tìm Person - case-insensitive
             person_result = session.run("""
                 MATCH (p:Person)
-                WHERE toLower(p.name) CONTAINS toLower($entity)
-                   OR toLower(p.full_name) CONTAINS toLower($entity)
-                   OR toLower(p.alias) CONTAINS toLower($entity)
+                WHERE toLower(coalesce(toStringOrNull(p.name), "")) CONTAINS toLower($entity)
+                   OR toLower(coalesce(toStringOrNull(p.full_name), "")) CONTAINS toLower($entity)
+                   OR toLower(coalesce(toStringOrNull(p.alias), "")) CONTAINS toLower($entity)
                 RETURN elementId(p) as peid, p.name as pname
                 LIMIT 3
             """, entity=entity)
@@ -1965,7 +2188,7 @@ Trả về MỖI câu hỏi trên 1 dòng, không đánh số, không có giải
                 WHERE ANY(prop IN keys(n) 
                     WHERE prop IN ['biography', 'description', 'bio', 'content', 'text']
                       AND n[prop] IS NOT NULL
-                      AND toLower(n[prop]) CONTAINS $search)
+                      AND toLower(coalesce(toStringOrNull(n[prop]), "")) CONTAINS $search)
                 RETURN n, labels(n)[0] as type
                 LIMIT 10
             """, search=search_texts[0] if search_texts else entity)
@@ -2481,6 +2704,37 @@ Gợi ý:
                 print("  ✅ Aggregation query answered by graph property search")
                 return agg_answer
             print("  ⚠️ Aggregation query fallback to normal pipeline")
+
+        original_q = query_info.get("original_question", "")
+        is_compound = self._is_compound_question(original_q)
+        is_birth_location = self._is_birth_and_location_question(original_q)
+
+        if is_birth_location:
+            birth_location_answer = self._handle_birth_and_location_query(query_info)
+            if birth_location_answer:
+                print("  ✅ Compound birth+location answered directly from DB")
+                return birth_location_answer
+            print("  ⚠️ Compound birth+location fallback to normal pipeline")
+
+        if query_info.get('intent') in ['birth_year', 'death_year', 'birth_date', 'death_date', 'burial_date']:
+            if not is_compound:
+                temporal_answer = self._handle_temporal_query(query_info)
+                if temporal_answer:
+                    print("  ✅ Temporal query answered directly from DB")
+                    return temporal_answer
+                print("  ⚠️ Temporal query fallback to normal pipeline")
+            else:
+                print("  [Temporal] Compound question detected, skip direct temporal answer")
+
+        if query_info.get('intent') == 'notable_works':
+            if self._should_use_direct_notable_works(original_q):
+                works_answer = self._handle_notable_works_query(query_info)
+                if works_answer:
+                    print("  ✅ Notable works answered directly from DB")
+                    return works_answer
+                print("  ⚠️ Notable works fallback to normal pipeline")
+            else:
+                print("  [Notable Works] Contextual question detected, use full pipeline for richer answer")
 
         if not query_info.get("entity"):
             print("  ⚠️ Không trích xuất được entity")
