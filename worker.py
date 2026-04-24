@@ -126,9 +126,9 @@ class GraphRagQueueService:
             db=redis_db,
         )
 
-        self.main_queue = os.getenv("REDIS_TASK_QUEUE", "document:task:queue")
-        self.processing_queue = os.getenv("REDIS_PROCESSING_QUEUE", "document:processing:queue")
-        self.failed_queue = os.getenv("REDIS_FAILED_QUEUE", "document:failed:queue")
+        self.main_queue = os.getenv("REDIS_TASK_QUEUE", "document:task:queue:graph")
+        self.processing_queue = os.getenv("REDIS_PROCESSING_QUEUE", "document:processing:queue:graph")
+        self.failed_queue = os.getenv("REDIS_FAILED_QUEUE", "document:failed:queue:graph")
         self.dead_letter_queue = os.getenv("REDIS_DEAD_LETTER_QUEUE", "document:dead-letter:queue")
 
         self.result_prefix = os.getenv("WORKER_RESULT_PREFIX", "graphrag:result:")
@@ -246,25 +246,34 @@ class GraphRagQueueService:
         return snapshot
 
     def claim_task_blocking(self, timeout: int = 5) -> Optional[Dict[str, Any]]:
-        raw_payload = self.redis_client.brpoplpush(
-            self.main_queue,
-            self.processing_queue,
-            timeout=timeout,
-        )
+        try:
+            raw_payload = self.redis_client.execute_command(
+                "BLMOVE",
+                self.main_queue,
+                self.processing_queue,
+                "LEFT",
+                "RIGHT",
+                timeout,
+            )
+        except Exception:
+            raw_payload = self.redis_client.brpoplpush(
+                self.main_queue,
+                self.processing_queue,
+                timeout=timeout,
+            )
         if not raw_payload:
             return None
 
         self._restore_queue_sentinel_if_empty(self.main_queue)
 
         # Detect sentinel value used to keep the queue key visible in Redis when
-        # the queue is otherwise empty. Always recreate the main-queue sentinel
-        # explicitly so a leaked processing sentinel can never leave the source
-        # task queue missing while the worker is idle.
+        # the queue is otherwise empty. Put it on the RIGHT so LEFT-pop workers
+        # do not claim the sentinel ahead of real tasks.
         try:
             maybe_sentinel = json.loads(raw_payload)
             if maybe_sentinel.get("sentinel") is True or maybe_sentinel.get("type") == "sentinel":
                 self.redis_client.lrem(self.processing_queue, 1, raw_payload)
-                self.redis_client.lpush(self.main_queue, raw_payload)
+                self.redis_client.rpush(self.main_queue, raw_payload)
                 self._restore_queue_sentinel_if_empty(self.processing_queue)
                 return None
         except Exception:
@@ -291,17 +300,10 @@ class GraphRagQueueService:
             return 0
 
         self._restore_queue_sentinel_if_empty(self.processing_queue)
-
-        try:
-            payload = json.loads(raw_payload)
-            if isinstance(payload, dict):
-                self._push_queue_item(self.main_queue, payload)
-                return removed
-        except Exception:
-            pass
-
+        # Push released tasks to the opposite end so this worker does not
+        # immediately reclaim the same non-owner payload on the next LEFT-pop.
         self._remove_queue_sentinel(self.main_queue)
-        self.redis_client.lpush(self.main_queue, raw_payload)
+        self.redis_client.rpush(self.main_queue, raw_payload)
         return removed
 
     def requeue_task(self, task_data: Dict[str, Any]) -> None:
