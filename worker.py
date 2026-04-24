@@ -453,9 +453,14 @@ class GraphRagWorker:
         error: Optional[str] = None,
     ) -> None:
         if not self.pipeline_webhook_url:
+            logger.warning(
+                "[GRAPH_WEBHOOK_SKIPPED] task_id=%s reason=PIPELINE_WEBHOOK_URL not configured",
+                task_id,
+            )
             return
 
         if not task_id:
+            logger.warning("[GRAPH_WEBHOOK_SKIPPED] reason=missing task_id")
             return
 
         payload = {
@@ -472,6 +477,12 @@ class GraphRagWorker:
             headers["X-Webhook-Token"] = self.pipeline_webhook_token
 
         try:
+            logger.info(
+                "[GRAPH_WEBHOOK_CALLING] task_id=%s url=%s status=%s",
+                task_id,
+                self.pipeline_webhook_url,
+                status,
+            )
             response = requests.post(
                 self.pipeline_webhook_url,
                 json=payload,
@@ -480,16 +491,16 @@ class GraphRagWorker:
             )
             if response.status_code >= 400:
                 logger.warning(
-                    "Pipeline webhook returned %s for task_id=%s pipeline=graph body=%s",
-                    response.status_code,
+                    "[GRAPH_WEBHOOK_FAILED] task_id=%s http_status=%s body=%s",
                     task_id,
+                    response.status_code,
                     response.text[:300],
                 )
             else:
-                logger.info("Pipeline webhook sent successfully for task_id=%s pipeline=graph", task_id)
+                logger.info("[GRAPH_WEBHOOK_SUCCESS] task_id=%s http_status=%s", task_id, response.status_code)
         except Exception as exc:
             logger.warning(
-                "Pipeline webhook failed for task_id=%s pipeline=graph: %s",
+                "[GRAPH_WEBHOOK_FAILED] task_id=%s error=%s",
                 task_id,
                 str(exc),
             )
