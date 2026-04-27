@@ -5,6 +5,7 @@ import re
 from typing import Dict, Any, Optional
 from .llm_client import call_llm, call_llm_stream
 from .prompt_templates import ANSWER_PROMPT, CONTEXT_SYNTHESIS_PROMPT
+from .answer_postprocess import postprocess_answer
 
 
 # Prompt gộp - vừa trích xuất intent vừa trả lời
@@ -401,10 +402,7 @@ class AnswerGenerator:
             # Use timeout=30s for full context (verifying all search results)
             answer = call_llm(prompt, model="gemini-2.5-flash-lite", temperature=temperature or default_temp, timeout=30)
             # Clean markdown formatting and remove leaked English relationship labels
-            cleaned_answer = clean_markdown_format(answer)
-            cleaned_answer = clean_relationship_codes(cleaned_answer)
-            cleaned_answer = naturalize_vietnamese_response(cleaned_answer)
-            cleaned_answer = enforce_vietnamese_only(cleaned_answer)
+            cleaned_answer = postprocess_answer(answer)
             return cleaned_answer
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"
@@ -442,10 +440,7 @@ class AnswerGenerator:
                 full_answer += chunk
             
             # Clean markdown formatting from the full answer
-            cleaned_answer = clean_markdown_format(full_answer)
-            cleaned_answer = clean_relationship_codes(cleaned_answer)
-            cleaned_answer = naturalize_vietnamese_response(cleaned_answer)
-            cleaned_answer = enforce_vietnamese_only(cleaned_answer)
+            cleaned_answer = postprocess_answer(full_answer)
             
             # Yield the cleaned answer (could yield line by line or all at once)
             # Yield all at once to preserve exact formatting
