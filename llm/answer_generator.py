@@ -126,6 +126,52 @@ VÍ DỤ MINH HỌA:
 - Nếu dữ liệu thiếu một ý, phải nói rõ ý nào thiếu dữ liệu thay vì bỏ qua.
 - Ví dụ: "X sinh năm nào và quê ở đâu?" → phải có cả năm sinh và quê quán (hoặc ghi rõ thiếu quê quán)."""
 
+IDENTITY_FOCUS_RULES = """
+=== RULE 8: CHẾ ĐỘ ĐỊNH DANH CHO CÂU "X LÀ AI?" ===
+Khi câu hỏi thuộc dạng định danh (ví dụ chứa "là ai", "là người nào", "giới thiệu về"):
+- Mục tiêu: trả lời NGẮN GỌN và TRỌNG TÂM, không liệt kê dàn trải quan hệ phụ.
+- Chỉ ưu tiên tối đa 3-5 ý cốt lõi theo thứ tự:
+  1) danh tính/vai trò chính,
+  2) tên thật/bí danh (nếu có),
+  3) mốc sinh-mất hoặc thời kỳ hoạt động nổi bật (nếu có),
+  4) 1-2 đóng góp/sự kiện tiêu biểu nhất.
+- KHÔNG liệt kê hàng loạt các quan hệ thứ cấp như: người dưới quyền, người đã bổ nhiệm, người đọc điếu văn, người gửi thư, danh sách dài nhân vật liên quan...
+- Nếu context có quá nhiều dữ kiện, hãy CHỌN lọc những ý quan trọng nhất thay vì kể hết.
+"""
+
+
+def _is_identity_question(question: str) -> bool:
+    """Detect identity-style questions that should be concise."""
+    if not question:
+        return False
+
+    q = question.lower()
+    identity_markers = [
+        "là ai",
+        "là người nào",
+        "giới thiệu về",
+        "là nhân vật nào",
+        "là ai vậy",
+        "là ai thế",
+    ]
+    return any(marker in q for marker in identity_markers)
+
+
+def _build_prompt(question: str, context: str) -> str:
+    """Build final prompt with conditional identity-focused rules."""
+    escaped_context = context.replace("{", "{{").replace("}", "}}")
+    escaped_question = question.replace("{", "{{").replace("}", "}}")
+
+    prompt = COMBINED_PROMPT.format(
+        context=escaped_context,
+        question=escaped_question
+    )
+
+    if _is_identity_question(question):
+        prompt = f"{prompt}\n\n{IDENTITY_FOCUS_RULES}"
+
+    return prompt
+
 
 
 def clean_markdown_format(text: str) -> str:
@@ -290,15 +336,8 @@ class AnswerGenerator:
         if not context:
             return "❌ Không tìm thấy dữ liệu liên quan."
 
-        # Escape { and } to avoid format string errors
-        escaped_context = context.replace("{", "{{").replace("}", "}}")
-        escaped_question = question.replace("{", "{{").replace("}", "}}")
-
-        # Use combined prompt - directly answer without separate intent extraction
-        prompt = COMBINED_PROMPT.format(
-            context=escaped_context,
-            question=escaped_question
-        )
+        # Use combined prompt with optional concise identity mode
+        prompt = _build_prompt(question=question, context=context)
 
         try:
             # Use temperature from env (default 0.1) or parameter
@@ -336,15 +375,8 @@ class AnswerGenerator:
             yield "❌ Không tìm thấy dữ liệu liên quan."
             return
 
-        # Escape { and } to avoid format string errors
-        escaped_context = context.replace("{", "{{").replace("}", "}}")
-        escaped_question = question.replace("{", "{{").replace("}", "}}")
-
-        # Use combined prompt - directly answer without separate intent extraction
-        prompt = COMBINED_PROMPT.format(
-            context=escaped_context,
-            question=escaped_question
-        )
+        # Use combined prompt with optional concise identity mode
+        prompt = _build_prompt(question=question, context=context)
 
         try:
             # Collect all chunks first
