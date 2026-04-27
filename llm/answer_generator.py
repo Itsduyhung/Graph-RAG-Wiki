@@ -31,6 +31,8 @@ Khi thấy các từ này → dịch sang tiếng Việt:
 - BORN_IN/BORN_AT → "sinh tại", "sinh năm"
 - CARED_BY → "được nuôi dạy bởi"
 - SUCCESSOR_OF → "kế nhiệm"
+- COMMANDED → "chỉ huy"
+- INSTRUCTED → "chỉ thị"
 
 === QUY TẮC LỚN - ĐỌC VÀ TUÂN THỦ CHẶT CHẼ ===
 
@@ -235,6 +237,8 @@ def clean_relationship_codes(text: str) -> str:
         "DIED_ON": "mất ngày",
         "PARTICIPATED_IN": "tham gia",
         "LED": "lãnh đạo",
+        "COMMANDED": "chỉ huy",
+        "INSTRUCTED": "chỉ thị",
         "RULED": "cai trị",
         "CROWNED_AS": "đăng quang làm",
         "CARED_BY": "được nuôi dạy bởi",
@@ -253,6 +257,8 @@ def clean_relationship_codes(text: str) -> str:
 
     # Remove any remaining ALL_CAPS labels with underscores (fallback for unknown relation names).
     text = re.sub(r'["\']?\b[A-Z]+(?:_[A-Z]+)+\b["\']?', '', text)
+    # Remove quoted ALL_CAPS tokens without underscores (ex: "COMMANDED", "INSTRUCTED").
+    text = re.sub(r'["\']\b[A-Z]{3,}\b["\']', '', text)
     # If a Vietnamese gloss remains in parentheses, unwrap it: "(bạn bè)" -> "bạn bè"
     text = re.sub(r'\(([^()]+)\)', r'\1', text)
     # Normalize extra spaces created by removals.
@@ -308,6 +314,56 @@ def naturalize_vietnamese_response(text: str) -> str:
     return f"{body}{active_person_suffix}".strip()
 
 
+def enforce_vietnamese_only(text: str) -> str:
+    """
+    Enforce Vietnamese-only phrasing for leaked technical English tokens.
+    Keep proper names intact as much as possible.
+    """
+    # Preserve Active person suffix exactly.
+    active_person_match = re.search(r'\n\nActive person:.*$', text, flags=re.DOTALL)
+    active_person_suffix = active_person_match.group(0) if active_person_match else ""
+    body = text[:active_person_match.start()] if active_person_match else text
+
+    # Normalize common leaked relation verbs/codes (case-insensitive).
+    english_to_vi = {
+        "commanded": "chỉ huy",
+        "instructed": "chỉ thị",
+        "led": "lãnh đạo",
+        "founded": "sáng lập",
+        "participated_in": "tham gia",
+        "works_at": "làm việc tại",
+        "successor_of": "kế nhiệm",
+        "predecessor_of": "tiền nhiệm",
+        "spouse_of": "vợ/chồng của",
+        "child_of": "con của",
+        "father_of": "cha của",
+        "mother_of": "mẹ của",
+        "mentor_of": "người cố vấn của",
+        "student_of": "học trò của",
+    }
+    for eng, vi in english_to_vi.items():
+        body = re.sub(rf'\b{re.escape(eng)}\b', vi, body, flags=re.IGNORECASE)
+
+    # Remove quoted pure English technical tokens: "COMMANDED", "INSTRUCTED", "RELATIONSHIP", etc.
+    body = re.sub(r'["\']\b[A-Za-z_]{3,}\b["\']', '', body)
+
+    # Remove standalone ALL-CAPS technical words likely not Vietnamese prose.
+    body = re.sub(r'\b[A-Z]{3,}(?:_[A-Z]{2,})*\b', '', body)
+
+    # Clean spacing/punctuation artifacts after removals.
+    body = re.sub(r'\s+,', ',', body)
+    body = re.sub(r'[ \t]{2,}', ' ', body)
+    body = re.sub(r' +([,.;:!?])', r'\1', body)
+    body = re.sub(r'\n[ \t]+', '\n', body)
+    body = re.sub(r'\n{3,}', '\n\n', body)
+    body = body.strip()
+
+    if not body:
+        body = "Hiện tại mình chưa tìm thấy thông tin này trong dữ liệu."
+
+    return f"{body}{active_person_suffix}".strip()
+
+
 class AnswerGenerator:
     """Generate answers from retrieved graph context."""
 
@@ -348,6 +404,7 @@ class AnswerGenerator:
             cleaned_answer = clean_markdown_format(answer)
             cleaned_answer = clean_relationship_codes(cleaned_answer)
             cleaned_answer = naturalize_vietnamese_response(cleaned_answer)
+            cleaned_answer = enforce_vietnamese_only(cleaned_answer)
             return cleaned_answer
         except Exception as e:
             return f"❌ Lỗi khi tạo câu trả lời: {str(e)}"
@@ -388,6 +445,7 @@ class AnswerGenerator:
             cleaned_answer = clean_markdown_format(full_answer)
             cleaned_answer = clean_relationship_codes(cleaned_answer)
             cleaned_answer = naturalize_vietnamese_response(cleaned_answer)
+            cleaned_answer = enforce_vietnamese_only(cleaned_answer)
             
             # Yield the cleaned answer (could yield line by line or all at once)
             # Yield all at once to preserve exact formatting
